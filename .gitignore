@@ -1,0 +1,19 @@
+# binários e saída de build
+/dist/
+fmrmm-server
+fmrmm-agent
+
+# segredos e dados de operação (NUNCA commitar)
+*.key
+admin.key
+bundle.json
+*.db
+*.db-wal
+*.db-shm
+ca.crt
+server.crt
+signers.json
+
+# dados locais de teste
+/tmp/
+*.log
