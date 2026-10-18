@@ -20,7 +20,7 @@ type handshakeMedia struct{ log *slog.Logger }
 // NewPlaceholderMedia devolve o plano de mídia padrão do PoC.
 func NewPlaceholderMedia(log *slog.Logger) SessionMedia { return &handshakeMedia{log: log} }
 
-func (m *handshakeMedia) Serve(ctx context.Context, conn net.Conn, mode string) error {
+func (m *handshakeMedia) Serve(ctx context.Context, conn net.Conn, mode, _ string) error {
 	banner := fmt.Sprintf("FM-RMM/1 session mode=%s (plano de mídia real: integrar motor endurecido)\n", mode)
 	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		return err

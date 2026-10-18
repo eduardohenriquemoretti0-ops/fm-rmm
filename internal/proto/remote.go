@@ -15,19 +15,29 @@ const (
 	ModeControl = "control" // visualização + teclado/mouse
 )
 
+// Motores de mídia. "screenshot" = captura em quadros pelo nosso relay (Linux/
+// macOS). "rustdesk" = RustDesk self-hosted endurecido (resolve Session 0 no
+// Windows); os pixels passam pelo hbbr do RustDesk, não pelo nosso relay.
+const (
+	EngineScreenshot = "screenshot"
+	EngineRustDesk   = "rustdesk"
+)
+
 // RemoteGrant é o que o administrador assina para autorizar UMA sessão.
 // Curta (minutos), para um agente e um técnico específicos.
 type RemoteGrant struct {
-	V          int       `json:"v"`
-	SessionID  string    `json:"session_id"`
-	AgentID    string    `json:"agent_id"`
-	Technician string    `json:"technician"` // quem vai acessar (auditoria)
-	Mode       string    `json:"mode"`       // view | control
-	RelayURL   string    `json:"relay_url"`  // wss:// do relay desta sessão
-	RelayToken string    `json:"relay_token"`// pareia as duas pontas no relay
-	IssuedAt   time.Time `json:"issued_at"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	Issuer     string    `json:"issuer"`
+	V           int       `json:"v"`
+	SessionID   string    `json:"session_id"`
+	AgentID     string    `json:"agent_id"`
+	Technician  string    `json:"technician"`             // quem vai acessar (auditoria)
+	Mode        string    `json:"mode"`                   // view | control
+	Engine      string    `json:"engine"`                 // screenshot | rustdesk
+	MediaSecret string    `json:"media_secret,omitempty"` // rustdesk: senha de uso único da sessão
+	RelayURL    string    `json:"relay_url"`              // wss:// do relay desta sessão (canal de controle)
+	RelayToken  string    `json:"relay_token"`            // pareia as duas pontas no relay
+	IssuedAt    time.Time `json:"issued_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	Issuer      string    `json:"issuer"`
 }
 
 // MaxGrantTTL: uma concessão de sessão vale no máximo isto.

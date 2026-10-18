@@ -37,7 +37,7 @@ func NewScreenMedia(log *slog.Logger, every time.Duration) SessionMedia {
 // protocolo de quadro: 4 bytes big-endian com o tamanho, seguidos do PNG.
 const maxFrame = 16 << 20
 
-func (m *screenMedia) Serve(ctx context.Context, conn net.Conn, mode string) error {
+func (m *screenMedia) Serve(ctx context.Context, conn net.Conn, mode, _ string) error {
 	if mode != "view" {
 		// controle (input) ainda não implementado: recusa explícita, não finge
 		return errors.New("modo controle ainda não suportado (integrar motor de mídia)")

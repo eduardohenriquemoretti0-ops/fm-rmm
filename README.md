@@ -49,11 +49,18 @@ Dois binários, um módulo:
 
 - **Acesso remoto:** este repositório entrega a **camada de autorização e
   sinalização** (inscrição, mTLS, concessão assinada, RBAC, indicador,
-  auditoria, relay). O **plano de mídia** (tela/teclado/mouse/arquivo) é uma
-  interface (`SessionMedia`) pensada para encaixar um motor endurecido
-  (ex.: RustDesk self-hosted) — não se reescreve codec/NAT/cripto do zero. O
-  agente já traz um plano de mídia *placeholder* que prova o caminho autorizado
-  ponta a ponta pelo relay.
+  auditoria, relay). O **plano de mídia** (tela/teclado/mouse) é uma interface
+  (`SessionMedia`) com dois motores:
+  - `screenshot` (Linux/macOS): captura a tela em quadros PNG pelo nosso relay
+    (modo view, só leitura; fail-closed sem captura);
+  - `rustdesk` (Windows): integra o **RustDesk self-hosted endurecido**, que
+    resolve a captura da área de trabalho a partir do serviço (Session 0). Os
+    pixels passam pelo hbbr do RustDesk; o nosso canal assinado leva só a
+    autorização e o ID. Endurecimento: só o **nosso hbbs/hbbr** com a **nossa
+    chave** (pinning), **senha de uso único por sessão** (vem na concessão
+    assinada, limpa no fim), sem senha permanente de acesso desatendido, e
+    permissões por modo (view desliga teclado/clipboard/arquivo). O motor é
+    escolhido automaticamente pelo SO do agente (`session new --engine` força).
 - **Não existe "modo de captura oculta".** O briefing descrevia um "Modo
   Perda/Roubo" com captura sem indicador. Isso **não foi implementado**: uma
   função cujo objetivo é capturar a tela sem o usuário saber é, em código,

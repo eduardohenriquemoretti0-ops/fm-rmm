@@ -32,7 +32,7 @@ func TestScreenMediaFrames(t *testing.T) {
 	m := &screenMedia{log: slog.New(slog.NewTextHandler(io.Discard, nil)), interval: 20 * time.Millisecond, capture: func() ([]byte, error) { return frame, nil }}
 	cons, ag := net.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = m.Serve(ctx, ag, "view") }()
+	go func() { _ = m.Serve(ctx, ag, "view", "") }()
 
 	for i := 0; i < 3; i++ {
 		cons.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -58,7 +58,7 @@ func TestScreenMediaFailClosed(t *testing.T) {
 	cons, ag := net.Pipe()
 	defer cons.Close()
 	errc := make(chan error, 1)
-	go func() { errc <- m.Serve(context.Background(), ag, "view") }()
+	go func() { errc <- m.Serve(context.Background(), ag, "view", "") }()
 	select {
 	case err := <-errc:
 		if err == nil {
@@ -74,7 +74,7 @@ func TestScreenMediaControleRecusa(t *testing.T) {
 	m := &screenMedia{log: slog.New(slog.NewTextHandler(io.Discard, nil)), interval: time.Second,
 		capture: func() ([]byte, error) { return pngFake(t), nil }}
 	_, ag := net.Pipe()
-	if err := m.Serve(context.Background(), ag, "control"); err == nil {
+	if err := m.Serve(context.Background(), ag, "control", ""); err == nil {
 		t.Fatal("modo controle deveria ser recusado")
 	}
 }

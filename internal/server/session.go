@@ -29,15 +29,18 @@ func (s *Store) initSessions() error {
 
 type Session struct {
 	ID, AgentID, Technician, Mode, Signed, Status string
-	CreatedAt, ExpiresAt, StartedAt, EndedAt       int64
+	CreatedAt, ExpiresAt, StartedAt, EndedAt      int64
 }
 
 // CreateSession checa RBAC, assina a concessão e enfileira para o agente.
 // relayBase é o wss:// do relay; cada sessão ganha um token de relay próprio.
-func CreateSession(st *Store, priv ed25519.PrivateKey, signers map[string]ed25519.PublicKey, agentID, technician, mode, relayBase string, ttl time.Duration, issuer string) (proto.RemoteGrant, string, error) {
+func CreateSession(st *Store, priv ed25519.PrivateKey, signers map[string]ed25519.PublicKey, agentID, technician, mode, engine, relayBase string, ttl time.Duration, issuer string) (proto.RemoteGrant, string, error) {
 	var g proto.RemoteGrant
 	if mode != proto.ModeView && mode != proto.ModeControl {
 		return g, "", sign.ErrGrantMode
+	}
+	if engine != proto.EngineScreenshot && engine != proto.EngineRustDesk {
+		return g, "", sign.ErrEngine
 	}
 	if ttl <= 0 || ttl > proto.MaxGrantTTL {
 		return g, "", fmt.Errorf("validade deve estar entre 1s e %s", proto.MaxGrantTTL)
@@ -57,9 +60,14 @@ func CreateSession(st *Store, priv ed25519.PrivateKey, signers map[string]ed2551
 	}
 	now := time.Now().UTC()
 	relayToken := randSecret()
+	// rustdesk: senha de uso único da sessão (o agente arma o RustDesk com ela)
+	mediaSecret := ""
+	if engine == proto.EngineRustDesk {
+		mediaSecret = randHex(6) // 12 hex, suficiente p/ senha de sessão curta
+	}
 	g = proto.RemoteGrant{
 		V: proto.Version, SessionID: "ses-" + randHex(8), AgentID: agentID, Technician: technician,
-		Mode: mode, RelayURL: relayBase, RelayToken: relayToken,
+		Mode: mode, Engine: engine, MediaSecret: mediaSecret, RelayURL: relayBase, RelayToken: relayToken,
 		IssuedAt: now, ExpiresAt: now.Add(ttl), Issuer: issuer,
 	}
 	sg, err := sign.SignGrant(priv, g)
@@ -73,7 +81,7 @@ func CreateSession(st *Store, priv ed25519.PrivateKey, signers map[string]ed2551
 		return g, "", err
 	}
 	return g, relayToken, st.Audit("sessao.autorizada", issuer, map[string]any{
-		"sessao": g.SessionID, "agente": agentID, "tecnico": technician, "modo": mode, "indicador": "sempre visível",
+		"sessao": g.SessionID, "agente": agentID, "tecnico": technician, "modo": mode, "motor": engine, "indicador": "sempre visível",
 	})
 }
 

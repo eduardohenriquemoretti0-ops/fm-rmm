@@ -98,4 +98,8 @@ type Bundle struct {
 	CAPEM     string `json:"ca_pem"`
 	SignerPub string `json:"signer_pub"` // Ed25519, base64
 	SignerID  string `json:"signer_id"`
+	// RustDesk self-hosted endurecido (opcional; só se o acesso remoto usa rustdesk).
+	// Pinning: o agente e o console só falam com ESTE rendezvous/relay e com esta chave.
+	RustDeskHost string `json:"rustdesk_host,omitempty"` // host do hbbs (ex.: 10.0.2.2)
+	RustDeskKey  string `json:"rustdesk_key,omitempty"`  // chave pública do hbbs (base64)
 }

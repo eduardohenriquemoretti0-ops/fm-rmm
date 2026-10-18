@@ -70,14 +70,32 @@ type Agent struct {
 	// exec é trocável nos testes
 	exec func(ctx context.Context, a catalog.Action, params map[string]string) (string, int, bool, error)
 	// acesso remoto (opcional): sem os dois, concessões de sessão são recusadas
-	indicator Indicator
-	media     SessionMedia
+	indicator     Indicator
+	media         SessionMedia            // padrão
+	mediaByEngine map[string]SessionMedia // por motor (ex.: rustdesk)
 }
 
-// EnableRemote liga o acesso remoto autorizado. O indicador é obrigatório:
-// sem ele, o agente recusa toda sessão (não há sessão sem aviso visível).
+// EnableRemote liga o acesso remoto autorizado com um plano de mídia padrão. O
+// indicador é obrigatório: sem ele, o agente recusa toda sessão.
 func (ag *Agent) EnableRemote(ind Indicator, media SessionMedia) {
 	ag.indicator, ag.media = ind, media
+}
+
+// SetMediaEngine registra um plano de mídia para um motor específico (ex.:
+// "rustdesk"). A concessão escolhe o motor; se não houver um registrado, cai no
+// padrão de EnableRemote.
+func (ag *Agent) SetMediaEngine(engine string, media SessionMedia) {
+	if ag.mediaByEngine == nil {
+		ag.mediaByEngine = map[string]SessionMedia{}
+	}
+	ag.mediaByEngine[engine] = media
+}
+
+func (ag *Agent) mediaFor(engine string) SessionMedia {
+	if m, ok := ag.mediaByEngine[engine]; ok {
+		return m
+	}
+	return ag.media
 }
 
 func New(dir string, log *slog.Logger) (*Agent, error) {
@@ -107,6 +125,7 @@ func New(dir string, log *slog.Logger) (*Agent, error) {
 	if ag.seen, err = openSeen(filepath.Join(dir, fileSeen)); err != nil {
 		return nil, err
 	}
+	ag.enableRustDesk()
 	return ag, nil
 }
 

@@ -46,7 +46,7 @@ type fakeMedia struct {
 	got  string
 }
 
-func (m *fakeMedia) Serve(ctx context.Context, conn net.Conn, mode string) error {
+func (m *fakeMedia) Serve(ctx context.Context, conn net.Conn, mode, _ string) error {
 	m.mu.Lock()
 	m.mode = mode
 	m.mu.Unlock()
@@ -110,14 +110,14 @@ func TestSessaoRemotaFluxo(t *testing.T) {
 	ind, med := enableRemote(ag)
 
 	// RBAC: técnico sem permissão é barrado já na criação
-	if _, _, err := server.CreateSession(l.st, l.admin, l.signers, ag.state.AgentID, "tec-sem-acesso", proto.ModeView, relayURL(rs), 10*time.Minute, "teste"); err == nil {
+	if _, _, err := server.CreateSession(l.st, l.admin, l.signers, ag.state.AgentID, "tec-sem-acesso", proto.ModeView, proto.EngineScreenshot, relayURL(rs), 10*time.Minute, "teste"); err == nil {
 		t.Fatal("sessão criada para técnico sem permissão")
 	}
 	// dá acesso ao grupo do agente (default)
 	if err := l.st.GrantGroup("joao", "default"); err != nil {
 		t.Fatal(err)
 	}
-	g, token, err := server.CreateSession(l.st, l.admin, l.signers, ag.state.AgentID, "joao", proto.ModeView, relayURL(rs), 10*time.Minute, "teste")
+	g, token, err := server.CreateSession(l.st, l.admin, l.signers, ag.state.AgentID, "joao", proto.ModeView, proto.EngineScreenshot, relayURL(rs), 10*time.Minute, "teste")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestSessaoSemIndicadorRecusa(t *testing.T) {
 	ind, med := enableRemote(ag)
 	ind.failForever = true
 	_ = l.st.GrantGroup("joao", "*")
-	g, _, err := server.CreateSession(l.st, l.admin, l.signers, ag.state.AgentID, "joao", proto.ModeView, "wss://x", 10*time.Minute, "teste")
+	g, _, err := server.CreateSession(l.st, l.admin, l.signers, ag.state.AgentID, "joao", proto.ModeView, proto.EngineScreenshot, "wss://x", 10*time.Minute, "teste")
 	if err != nil {
 		t.Fatal(err)
 	}

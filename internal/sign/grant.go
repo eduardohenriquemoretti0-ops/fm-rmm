@@ -14,6 +14,7 @@ import (
 
 var (
 	ErrGrantMode = errors.New("modo de sessão inválido")
+	ErrEngine    = errors.New("motor de mídia inválido")
 	ErrGrantTTL  = errors.New("validade da concessão acima do máximo")
 	ErrRelay     = errors.New("concessão sem relay")
 )
@@ -48,6 +49,12 @@ func VerifyGrant(pub ed25519.PublicKey, sg proto.SignedGrant, agentID string, no
 	}
 	if g.Mode != proto.ModeView && g.Mode != proto.ModeControl {
 		return g, ErrGrantMode
+	}
+	if g.Engine != proto.EngineScreenshot && g.Engine != proto.EngineRustDesk {
+		return g, ErrEngine
+	}
+	if g.Engine == proto.EngineRustDesk && g.MediaSecret == "" {
+		return g, ErrMalformed // rustdesk exige senha de uso único
 	}
 	if g.RelayURL == "" || g.RelayToken == "" {
 		return g, ErrRelay

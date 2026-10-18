@@ -28,8 +28,10 @@ import (
 // mídia endurecido (ex.: RustDesk). Mantido atrás de interface de propósito:
 // a captura de tela é platform-specific e não deve ser reescrita do zero.
 type SessionMedia interface {
-	// Serve roda a sessão sobre conn até o fim. mode é "view" ou "control".
-	Serve(ctx context.Context, conn net.Conn, mode string) error
+	// Serve roda a sessão sobre conn até o fim. mode é "view" ou "control";
+	// secret é a senha de uso único da sessão (usada pelo motor rustdesk;
+	// os motores que não precisam a ignoram).
+	Serve(ctx context.Context, conn net.Conn, mode, secret string) error
 }
 
 // Indicator é o indicador de sessão visível no endpoint. Show deve tornar a
@@ -52,7 +54,8 @@ func (ag *Agent) handleGrant(ctx context.Context, sg proto.SignedGrant) proto.Se
 		}
 		return refuse(g.SessionID, err.Error())
 	}
-	if ag.indicator == nil || ag.media == nil {
+	media := ag.mediaFor(g.Engine)
+	if ag.indicator == nil || media == nil {
 		return refuse(g.SessionID, "mídia/indicador não configurados neste agente")
 	}
 	// indicador ANTES da mídia; sem ele, não há sessão
@@ -72,7 +75,7 @@ func (ag *Agent) handleGrant(ctx context.Context, sg proto.SignedGrant) proto.Se
 	defer conn.Close()
 	sctx, cancel := context.WithDeadline(ctx, g.ExpiresAt)
 	defer cancel()
-	if err := ag.media.Serve(sctx, conn, g.Mode); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+	if err := media.Serve(sctx, conn, g.Mode, g.MediaSecret); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		ag.Log.Warn("sessão encerrou com erro", "sessao", g.SessionID, "erro", err)
 	}
 	return proto.SessionEvent{SessionID: g.SessionID, Event: "encerrada", At: ag.now()}
