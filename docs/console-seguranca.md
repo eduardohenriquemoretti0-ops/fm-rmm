@@ -109,3 +109,55 @@ Fluxo de uma ação de escrita (ex.: abrir sessão, instalar item N no grupo G):
 Browser real + autenticador FIDO2 + VM. O servidor Go é testável em unidade
 (headers, sessão, RBAC, re-verificação de assinatura). O SPA e o WebCrypto
 validam no navegador. Pentest interno (time de segurança) antes de "pronto".
+
+---
+
+## Modelo de confiança da assinatura do operador (decidido 2026-10-19: opção A)
+
+O operador assina jobs/sessões no navegador (WebCrypto, Ed25519 não-exportável).
+O endpoint passa a confiar num **CONJUNTO** de chaves, não mais numa só. A chave
+de admin (raiz) continua **100% offline**.
+
+### Lista de signers assinada e versionada
+- Formato (JSON canônico): `{ "version": N, "issued_at": "<RFC3339>", "signers":
+  [ { "key_id", "pub" (base64), "role": "admin"|"operator", "not_after"?:"<RFC3339>" } ] }`.
+- A lista é assinada (Ed25519 destacada) pela **chave raiz offline** — a mesma cujo
+  pub já vem no `bundle.SignerPub`. Adicionar/remover operador = gerar nova lista e
+  assiná-la **offline** (passo de admin fora de banda; casa com o re-provisionamento
+  por admin da recuperação).
+- O agente ancora a confiança na chave raiz (bundle). Verifica a assinatura da
+  lista contra a raiz; o **trust-set** passa a ser: chave raiz + todos os `pub` da
+  lista válida mais recente.
+- **Anti-downgrade:** o agente guarda a maior `version` já vista e **recusa** lista
+  com `version` menor ou igual (impede replay de lista antiga que re-habilita um
+  operador revogado). Rejeita também `not_after` vencido.
+- **Revogação de operador:** nova lista (version+1) sem aquele signer; ao chegar no
+  agente, o operador some do trust-set. (A revogação é tão rápida quanto a
+  distribuição da lista.)
+
+### Fluxo de uma ação do operador
+1. Operador autenticado (WebAuthn+mTLS) + step-up monta o grant/job canônico e
+   **assina com a chave de operador** (browser). Integridade ida-e-volta (§Assinatura).
+2. `POST /api/acoes`: o servidor **verifica a assinatura do operador** (pub do
+   operador no store), confere nonce (anti-replay persistente), `expira_em`, RBAC
+   (`CanAccess(op.TechName, alvo)`) e step-up; então **enfileira o objeto assinado
+   pelo operador** (o servidor NÃO re-assina, NÃO tem chave de assinatura).
+3. O agente recebe e **verifica contra o trust-set** (raiz + operadores da lista),
+   exatamente como já verifica hoje — anti-replay `seen.json`, `expira_em`, agentID.
+
+### Decomposição de tarefas (adendo ao handoff)
+- **T5a (dev-golang):** agente deixa de confiar em 1 pub e passa a um trust-set
+  ancorado na raiz; parse+verificação da lista de signers assinada + anti-downgrade
+  (persistir a maior version); `VerifyGrant`/`VerifyJob` aceitam qualquer pub do
+  trust-set. Testes: lista forjada recusada, downgrade recusado, operador revogado
+  deixa de valer, grant de operador no trust-set é aceito.
+- **T5b (dev-golang):** store guarda a pub de assinatura do operador; ferramenta de
+  admin **offline** que monta e assina a lista (não no servidor); endpoint que serve
+  a lista corrente para os agentes puxarem no check-in.
+- **T5c (dev-golang):** `POST /api/acoes` — verificação da assinatura do operador +
+  nonce + `expira_em` + RBAC + step-up + enfileirar. Canonicalização ÚNICA,
+  idêntica à do SPA (T7).
+- **T7 (dev-typescript):** autenticador WebCrypto no SPA — chave Ed25519
+  não-exportável, canonicalização idêntica à do servidor, assina, verifica
+  ida-e-volta, envia a `/api/acoes`. Também alinhar a rota para `/api/agentes` e os
+  campos ao JSON real do T4.
