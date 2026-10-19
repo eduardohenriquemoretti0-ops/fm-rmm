@@ -45,6 +45,12 @@ type agenteView struct {
 	Grupo         string  `json:"grupo"`
 	Online        bool    `json:"online"`
 	UltimoContato *string `json:"ultimo_contato"` // RFC3339 UTC; null se nunca deu check-in
+
+	// Resumos compactos do grid (§3.4). Só leitura do que já existe no banco;
+	// ausente = escaneado=false / campos null (nunca erro).
+	Vulnerabilidades server.VulnCompacto  `json:"vulnerabilidades"`
+	Updates          server.UpdatesResumo `json:"updates"`
+	Saude            server.SaudeResumo   `json:"saude"`
 }
 
 // resultadoView é um resultado de ação de leitura já finalizada.
@@ -164,6 +170,14 @@ func (c *Console) visaoDe(a server.Agent) agenteView {
 		s := time.Unix(a.LastSeen, 0).UTC().Format(time.RFC3339)
 		v.UltimoContato = &s
 	}
+	// Falha de leitura de um resumo degrada para "desconhecido" (null) em vez de
+	// derrubar o grid inteiro por causa de um agente.
+	v.Vulnerabilidades, _ = c.st.ResumoVulnsCompacto(a.ID)
+	if v.Vulnerabilidades.PorSeveridade == nil {
+		v.Vulnerabilidades.PorSeveridade = map[string]int{}
+	}
+	v.Updates, _ = c.st.ResumoUpdates(a.ID)
+	v.Saude, _ = c.st.ResumoSaude(a.ID)
 	return v
 }
 

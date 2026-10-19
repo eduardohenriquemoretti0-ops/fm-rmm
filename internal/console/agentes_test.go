@@ -213,7 +213,7 @@ func TestShapeJSONDaLista(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	chaves := []string{"id", "hostname", "os", "status", "grupo", "online", "ultimo_contato"}
+	chaves := []string{"id", "hostname", "os", "status", "grupo", "online", "ultimo_contato", "vulnerabilidades", "updates", "saude"}
 	porID := map[string]map[string]any{}
 	for _, a := range resp.Agentes {
 		if len(a) != len(chaves) {
@@ -386,5 +386,107 @@ func TestLeituraSemSessaoRecusada(t *testing.T) {
 	rec := c.get(t, "/api/agentes", c.certA, nil)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("lista sem sessão = %d, quer 401", rec.Code)
+	}
+}
+
+// finalizaLeitura grava um job de leitura já finalizado com a saída dada.
+func finalizaLeitura(t *testing.T, st *server.Store, ag, id, acao, saida string) {
+	t.Helper()
+	expira := time.Now().Add(time.Hour).Unix()
+	if err := st.AddJob(server.Job{ID: id, AgentID: ag, Action: acao, Params: "{}", Signed: "{}", Issuer: "adm", ExpiresAt: expira}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.TakeQueued(context.Background(), ag); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(proto.Result{JobID: id, Status: "ok", Output: saida})
+	if err := st.FinishJob(ag, id, "ok", string(b)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// resumos do grid: agente com CVE+updates+saúde gravados; agente sem nada vira
+// null/escaneado=false; RBAC continua (grupo A não vê B nem seus resumos).
+func TestListaTrazResumosDoGrid(t *testing.T) {
+	c := novoCenario(t)
+	st := c.a.f.st
+	now := time.Now()
+	if err := st.SalvarScan(server.ResumoScan{AgentID: c.ag1, JobID: "j", EscaneadoEm: now.Unix(), ItensTotal: 3, Avaliados: 3},
+		[]server.Achado{
+			{VulnID: "OSV-1", CVEID: "CVE-1", Pacote: "openssl", Versao: "1", Severidade: "CRITICAL", Fonte: server.FonteOSV, VistoEm: now.Unix()},
+			{VulnID: "OSV-2", CVEID: "CVE-2", Pacote: "curl", Versao: "1", Severidade: "HIGH", Fonte: server.FonteOSV, VistoEm: now.Unix()},
+			{VulnID: "OSV-3", CVEID: "CVE-3", Pacote: "bash", Versao: "1", Severidade: "HIGH", Fonte: server.FonteOSV, VistoEm: now.Unix()},
+		}, true, now); err != nil {
+		t.Fatal(err)
+	}
+	finalizaLeitura(t, st, c.ag1, "ju", "atualizacoes",
+		"reinicio_pendente: sim\n== Pendentes (apt)\nListing...\nopenssl/x 3 amd64 [upgradable from: 2]\ncurl/x 8 amd64 [upgradable from: 7]\n== Historico recente\n")
+	finalizaLeitura(t, st, c.ag1, "js", "saude", "eventos_instabilidade: 2\nestavel: nao\n")
+	// resultado do agente do grupo B não pode aparecer para o operador A
+	finalizaLeitura(t, st, c.ag2, "jb", "saude", "eventos_instabilidade: 9\nestavel: nao\n")
+
+	ck := c.a.cookieDe(t, "op-a", c.certA)
+	rec := c.get(t, "/api/agentes", c.certA, ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("lista = %d", rec.Code)
+	}
+	t.Logf("LISTA: %s", rec.Body.String())
+	var resp struct {
+		Agentes []struct {
+			ID               string `json:"id"`
+			Vulnerabilidades struct {
+				Escaneado     bool           `json:"escaneado"`
+				Total         int            `json:"total"`
+				PorSeveridade map[string]int `json:"por_severidade"`
+			} `json:"vulnerabilidades"`
+			Updates struct {
+				Pendentes        *int  `json:"pendentes"`
+				ReinicioPendente *bool `json:"reinicio_pendente"`
+			} `json:"updates"`
+			Saude struct {
+				Estavel *bool `json:"estavel"`
+				Eventos *int  `json:"eventos"`
+			} `json:"saude"`
+		} `json:"agentes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Agentes) != 2 {
+		t.Fatalf("operador A vê %d agentes, quer 2 (ag1, ag3)", len(resp.Agentes))
+	}
+	for _, a := range resp.Agentes {
+		switch a.ID {
+		case c.ag1:
+			v := a.Vulnerabilidades
+			if !v.Escaneado || v.Total != 3 || v.PorSeveridade["CRITICAL"] != 1 || v.PorSeveridade["HIGH"] != 2 {
+				t.Errorf("vulns = %+v", v)
+			}
+			if a.Updates.Pendentes == nil || *a.Updates.Pendentes != 2 || a.Updates.ReinicioPendente == nil || !*a.Updates.ReinicioPendente {
+				t.Errorf("updates = %+v", a.Updates)
+			}
+			if a.Saude.Eventos == nil || *a.Saude.Eventos != 2 || a.Saude.Estavel == nil || *a.Saude.Estavel {
+				t.Errorf("saude = %+v", a.Saude)
+			}
+		case c.ag3:
+			if a.Vulnerabilidades.Escaneado || a.Vulnerabilidades.Total != 0 || a.Updates.Pendentes != nil ||
+				a.Updates.ReinicioPendente != nil || a.Saude.Estavel != nil || a.Saude.Eventos != nil {
+				t.Errorf("agente sem resultados deveria vir null/escaneado=false: %+v", a)
+			}
+		default:
+			t.Errorf("agente inesperado (RBAC): %s", a.ID)
+		}
+	}
+	if strings.Contains(rec.Body.String(), c.ag2) {
+		t.Error("agente do grupo B vazou na lista do A")
+	}
+
+	// detalhe coerente com a lista
+	det := c.get(t, "/api/agentes/"+c.ag1, c.certA, ck)
+	if !strings.Contains(det.Body.String(), `"total":3`) || !strings.Contains(det.Body.String(), `"pendentes":2`) {
+		t.Errorf("detalhe sem resumos: %s", det.Body.String())
+	}
+	if c.get(t, "/api/agentes/"+c.ag2, c.certA, ck).Code != http.StatusNotFound {
+		t.Error("detalhe do grupo B deveria ser 404 para A")
 	}
 }
