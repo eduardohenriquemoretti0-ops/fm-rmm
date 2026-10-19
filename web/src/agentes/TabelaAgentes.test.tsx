@@ -13,6 +13,7 @@ const hostil: Agente = {
   grupo: '<b onclick=alert(5)>',
   online: true,
   ultimo_contato: 'javascript:alert(4)',
+  vulnerabilidades: { escaneado: false, escaneado_em: null, total: 0, por_severidade: {} }, updates: { pendentes: null, reinicio_pendente: null }, saude: { estavel: null, eventos: null },
 };
 
 describe('TabelaAgentes — escape automático', () => {

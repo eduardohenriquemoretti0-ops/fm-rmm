@@ -5,7 +5,15 @@
 import { chamarApi, ErroApi } from './cliente';
 import type {
   Agente,
+  ItemVuln,
+  NaoAvaliado,
   OpcoesAsercaoJSON,
+  OpcoesRegistroJSON,
+  RespostaRegistroInicio,
+  ResumoVulnerabilidades,
+  SaudeResumo,
+  UpdatesResumo,
+  VulnCompacto,
   RespostaLoginFim,
   RespostaAcao,
   RespostaChave,
@@ -47,7 +55,39 @@ function ehRespostaSessao(x: unknown): x is RespostaSessao {
   );
 }
 
-function ehAgente(x: unknown): x is Agente {
+function ehNumeroOuNulo(x: unknown): x is number | null {
+  return x === null || (typeof x === 'number' && Number.isFinite(x));
+}
+
+function ehBoolOuNulo(x: unknown): x is boolean | null {
+  return x === null || typeof x === 'boolean';
+}
+
+function ehMapaContagem(x: unknown): x is Record<string, number> {
+  return (
+    ehRegistro(x) && Object.values(x).every((v) => typeof v === 'number' && Number.isFinite(v))
+  );
+}
+
+export function ehVulnCompacto(x: unknown): x is VulnCompacto {
+  return (
+    ehRegistro(x) &&
+    typeof x.escaneado === 'boolean' &&
+    (x.escaneado_em === null || ehTexto(x.escaneado_em)) &&
+    typeof x.total === 'number' &&
+    ehMapaContagem(x.por_severidade)
+  );
+}
+
+export function ehUpdatesResumo(x: unknown): x is UpdatesResumo {
+  return ehRegistro(x) && ehNumeroOuNulo(x.pendentes) && ehBoolOuNulo(x.reinicio_pendente);
+}
+
+export function ehSaudeResumo(x: unknown): x is SaudeResumo {
+  return ehRegistro(x) && ehBoolOuNulo(x.estavel) && ehNumeroOuNulo(x.eventos);
+}
+
+export function ehAgente(x: unknown): x is Agente {
   return (
     ehRegistro(x) &&
     ehTexto(x.id) &&
@@ -56,7 +96,10 @@ function ehAgente(x: unknown): x is Agente {
     ehTexto(x.status) &&
     ehTexto(x.grupo) &&
     typeof x.online === 'boolean' &&
-    (x.ultimo_contato === null || ehTexto(x.ultimo_contato))
+    (x.ultimo_contato === null || ehTexto(x.ultimo_contato)) &&
+    ehVulnCompacto(x.vulnerabilidades) &&
+    ehUpdatesResumo(x.updates) &&
+    ehSaudeResumo(x.saude)
   );
 }
 
@@ -131,9 +174,8 @@ export async function registrarChaveAssinatura(corpo: RegistroChave): Promise<Re
 }
 
 /**
- * Step-up WebAuthn (re-toque). ATENÇÃO: o backend tem Autenticador.IniciaStepUp /
- * FinalizaStepUp, mas ainda NÃO expõe rota HTTP (rotas.go). Os caminhos abaixo são
- * a convenção espelhada de /api/login/*; ajustar aqui quando o backend publicar.
+ * Step-up WebAuthn (re-toque): rotas publicadas e funcionando no backend
+ * (internal/console/rotas.go), espelhando /api/login/*.
  */
 export const CAMINHO_STEPUP_INICIO = '/api/stepup/inicio';
 export const CAMINHO_STEPUP_FIM = '/api/stepup/fim';
@@ -148,4 +190,100 @@ export async function iniciarStepUp(): Promise<RespostaLoginInicio> {
 
 export async function finalizarStepUp(cerimonia: string, credencial: unknown): Promise<void> {
   await chamarApi(CAMINHO_STEPUP_FIM, { metodo: 'POST', cerimonia, corpo: credencial });
+}
+
+function ehItemVuln(x: unknown): x is ItemVuln {
+  return (
+    ehRegistro(x) &&
+    ehTexto(x.cve_id) &&
+    ehTexto(x.pacote) &&
+    ehTexto(x.versao) &&
+    ehTexto(x.severidade) &&
+    (x.pontuacao === undefined || ehNumeroOuNulo(x.pontuacao)) &&
+    ehTexto(x.fixed_version)
+  );
+}
+
+function ehNaoAvaliado(x: unknown): x is NaoAvaliado {
+  return ehRegistro(x) && ehTexto(x.pacote) && ehTexto(x.versao) && ehTexto(x.motivo);
+}
+
+/** Valida e normaliza o resumo de CVE (pontuacao ausente vira null). */
+export function lerResumoVulns(r: unknown): ResumoVulnerabilidades {
+  if (
+    !ehRegistro(r) ||
+    typeof r.escaneado !== 'boolean' ||
+    !(r.escaneado_em === null || ehTexto(r.escaneado_em)) ||
+    !ehTexto(r.fonte) ||
+    typeof r.total !== 'number' ||
+    !ehMapaContagem(r.por_severidade) ||
+    !Array.isArray(r.vulnerabilidades) ||
+    !r.vulnerabilidades.every(ehItemVuln) ||
+    !Array.isArray(r.nao_avaliados_alto_risco) ||
+    !r.nao_avaliados_alto_risco.every(ehNaoAvaliado)
+  ) {
+    throw formaInvalida();
+  }
+  return {
+    escaneado: r.escaneado,
+    escaneado_em: r.escaneado_em,
+    fonte: r.fonte,
+    total: r.total,
+    por_severidade: r.por_severidade,
+    vulnerabilidades: (r.vulnerabilidades as ItemVuln[]).map((v) => ({
+      ...v,
+      pontuacao: typeof v.pontuacao === 'number' ? v.pontuacao : null,
+    })),
+    nao_avaliados_alto_risco: r.nao_avaliados_alto_risco,
+  };
+}
+
+/** GET /api/agentes/{id}/vulnerabilidades — resumo de CVEs (lê o banco). */
+export async function lerVulnerabilidades(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ResumoVulnerabilidades> {
+  const r = await chamarApi(
+    `/api/agentes/${encodeURIComponent(id)}/vulnerabilidades`,
+    signal ? { signal } : {},
+  );
+  return lerResumoVulns(r);
+}
+
+function ehOpcoesRegistro(x: unknown): x is OpcoesRegistroJSON {
+  if (!ehRegistro(x) || !ehRegistro(x.publicKey)) return false;
+  const pk = x.publicKey;
+  return (
+    ehTexto(pk.challenge) &&
+    ehRegistro(pk.rp) &&
+    ehTexto(pk.rp.name) &&
+    ehRegistro(pk.user) &&
+    ehTexto(pk.user.id) &&
+    ehTexto(pk.user.name) &&
+    ehTexto(pk.user.displayName) &&
+    Array.isArray(pk.pubKeyCredParams)
+  );
+}
+
+/** POST /api/registro/inicio — só cert; operador precisa estar pendente. */
+export async function iniciarRegistro(): Promise<RespostaRegistroInicio> {
+  const r = await chamarApi('/api/registro/inicio', { metodo: 'POST' });
+  if (!ehRegistro(r) || !ehTexto(r.cerimonia) || !ehOpcoesRegistro(r.opcoes)) {
+    throw formaInvalida();
+  }
+  return { cerimonia: r.cerimonia, opcoes: r.opcoes };
+}
+
+/** POST /api/registro/fim — envia a credencial criada; devolve o id (201). */
+export async function finalizarRegistro(
+  cerimonia: string,
+  credencial: unknown,
+): Promise<string> {
+  const r = await chamarApi('/api/registro/fim', {
+    metodo: 'POST',
+    cerimonia,
+    corpo: credencial,
+  });
+  if (!ehRegistro(r) || !ehTexto(r.credencial)) throw formaInvalida();
+  return r.credencial;
 }

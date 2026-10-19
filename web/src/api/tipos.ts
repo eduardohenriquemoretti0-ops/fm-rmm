@@ -60,6 +60,87 @@ export interface Agente {
   readonly online: boolean;
   /** Instante RFC 3339 UTC do último contato, ou null se nunca contatou. */
   readonly ultimo_contato: string | null;
+  readonly vulnerabilidades: VulnCompacto;
+  readonly updates: UpdatesResumo;
+  readonly saude: SaudeResumo;
+}
+
+/** Resumo compacto de CVEs por agente (escaneado=false => nunca escaneado). */
+export interface VulnCompacto {
+  readonly escaneado: boolean;
+  readonly escaneado_em: string | null;
+  readonly total: number;
+  /** Chaves como o servidor manda: CRITICAL, HIGH, MEDIUM, LOW, DESCONHECIDA. */
+  readonly por_severidade: Readonly<Record<string, number>>;
+}
+
+/** null = desconhecido. */
+export interface UpdatesResumo {
+  readonly pendentes: number | null;
+  readonly reinicio_pendente: boolean | null;
+}
+
+/** null = desconhecido. */
+export interface SaudeResumo {
+  readonly estavel: boolean | null;
+  readonly eventos: number | null;
+}
+
+/** Achado de CVE (GET /api/agentes/{id}/vulnerabilidades). */
+export interface ItemVuln {
+  readonly cve_id: string;
+  readonly pacote: string;
+  readonly versao: string;
+  readonly severidade: string;
+  readonly pontuacao: number | null;
+  readonly fixed_version: string;
+}
+
+/** Item de alto risco que nenhuma fonte soube cruzar com CVE. */
+export interface NaoAvaliado {
+  readonly pacote: string;
+  readonly versao: string;
+  readonly motivo: string;
+}
+
+/** Resposta de GET /api/agentes/{id}/vulnerabilidades. */
+export interface ResumoVulnerabilidades {
+  readonly escaneado: boolean;
+  readonly escaneado_em: string | null;
+  readonly fonte: string;
+  readonly total: number;
+  readonly por_severidade: Readonly<Record<string, number>>;
+  readonly vulnerabilidades: ReadonlyArray<ItemVuln>;
+  readonly nao_avaliados_alto_risco: ReadonlyArray<NaoAvaliado>;
+}
+
+/** Opções de registro WebAuthn (go-webauthn CredentialCreation). */
+export interface OpcoesRegistroJSON {
+  readonly publicKey: {
+    readonly challenge: string;
+    readonly rp: { readonly id?: string; readonly name: string };
+    readonly user: { readonly id: string; readonly name: string; readonly displayName: string };
+    readonly pubKeyCredParams: ReadonlyArray<{ readonly type: 'public-key'; readonly alg: number }>;
+    readonly timeout?: number;
+    readonly excludeCredentials?: ReadonlyArray<{
+      readonly type: 'public-key';
+      readonly id: string;
+      readonly transports?: ReadonlyArray<string>;
+    }>;
+    readonly authenticatorSelection?: {
+      readonly authenticatorAttachment?: string;
+      readonly residentKey?: string;
+      readonly requireResidentKey?: boolean;
+      readonly userVerification?: 'required' | 'preferred' | 'discouraged';
+    };
+    readonly attestation?: string;
+  };
+}
+
+/** Resposta de POST /api/registro/inicio. */
+export interface RespostaRegistroInicio {
+  readonly cerimonia: string;
+  readonly opcoes: OpcoesRegistroJSON;
 }
 
 /** Resposta de POST /api/acoes (202). */

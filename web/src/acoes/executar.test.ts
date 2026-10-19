@@ -8,6 +8,7 @@ import type { Agente } from '../api/tipos';
 
 const agente: Agente = {
   id: 'agt-0001', hostname: 'h', os: 'linux', status: 'aprovado', grupo: 'g', online: true, ultimo_contato: null,
+  vulnerabilidades: { escaneado: false, escaneado_em: null, total: 0, por_severidade: {} }, updates: { pendentes: null, reinicio_pendente: null }, saude: { estavel: null, eventos: null },
 };
 let aut: Autenticador;
 

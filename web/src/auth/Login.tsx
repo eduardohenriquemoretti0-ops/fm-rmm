@@ -21,7 +21,13 @@ function mensagemErro(erro: unknown): string {
   return mensagemErroWebAuthn(erro);
 }
 
-export function Login({ aviso }: { readonly aviso?: string | undefined }) {
+export function Login({
+  aviso,
+  aoRegistrar,
+}: {
+  readonly aviso?: string | undefined;
+  readonly aoRegistrar?: (() => void) | undefined;
+}) {
   const { aoAutenticar } = useSessao();
   const [ocupado, setOcupado] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -59,6 +65,13 @@ export function Login({ aviso }: { readonly aviso?: string | undefined }) {
       <button type="button" onClick={() => void entrar()} disabled={ocupado}>
         {ocupado ? 'Aguardando o autenticador…' : 'Entrar com chave de segurança'}
       </button>
+      {aoRegistrar !== undefined && (
+        <p>
+          <button type="button" className="link" onClick={aoRegistrar}>
+            Primeiro acesso? Registrar chaves
+          </button>
+        </p>
+      )}
     </main>
   );
 }

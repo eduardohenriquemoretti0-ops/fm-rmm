@@ -15,6 +15,7 @@ import { fazerStepUp } from '../auth/stepup';
 import { useSessao } from '../auth/sessao';
 import { filtrarAgentes } from './filtro';
 import { TabelaAgentes } from './TabelaAgentes';
+import { PainelVulns } from './PainelVulns';
 
 type Carga =
   | { readonly fase: 'carregando' }
@@ -32,6 +33,7 @@ export function GridAgentes() {
   const [termo, setTermo] = useState('');
   const [recarga, setRecarga] = useState(0);
   const [aviso, setAviso] = useState<string | null>(null);
+  const [detalhe, setDetalhe] = useState<Agente | null>(null);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -148,7 +150,15 @@ export function GridAgentes() {
             agentes={visiveis}
             aoConectar={(a) => void rodar(() => conectarAgente(a, ctx))}
             aoEnviarInfo={(a) => void rodar(() => enviarJobInfo(a, ctx))}
+            aoVerVulns={(a) => setDetalhe(a)}
           />
+          {detalhe !== null && (
+            <PainelVulns
+              agenteId={detalhe.id}
+              hostname={detalhe.hostname}
+              aoFechar={() => setDetalhe(null)}
+            />
+          )}
           {visiveis.length === 0 && total > 0 && (
             <p>Nenhum agente corresponde à busca.</p>
           )}

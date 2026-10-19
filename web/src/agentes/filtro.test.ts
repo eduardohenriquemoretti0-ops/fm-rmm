@@ -3,8 +3,8 @@ import { filtrarAgentes, formatarUltimoContato } from './filtro';
 import type { Agente } from '../api/tipos';
 
 const lista: Agente[] = [
-  { id: 'ag-01', hostname: 'SRV-Jundiai', os: 'Windows 10', status: 'aprovado', grupo: 'g1', online: true, ultimo_contato: null },
-  { id: 'ag-02', hostname: 'pc-ana', os: 'Ubuntu 24.04', status: 'aprovado', grupo: 'g1', online: false, ultimo_contato: '2026-10-18T12:00:00Z' },
+  { id: 'ag-01', hostname: 'SRV-Jundiai', os: 'Windows 10', status: 'aprovado', grupo: 'g1', online: true, ultimo_contato: null, vulnerabilidades: { escaneado: false, escaneado_em: null, total: 0, por_severidade: {} }, updates: { pendentes: null, reinicio_pendente: null }, saude: { estavel: null, eventos: null } },
+  { id: 'ag-02', hostname: 'pc-ana', os: 'Ubuntu 24.04', status: 'aprovado', grupo: 'g1', online: false, ultimo_contato: '2026-10-18T12:00:00Z', vulnerabilidades: { escaneado: false, escaneado_em: null, total: 0, por_severidade: {} }, updates: { pendentes: null, reinicio_pendente: null }, saude: { estavel: null, eventos: null } },
 ];
 
 describe('filtrarAgentes', () => {

@@ -90,3 +90,35 @@ input[type='search'] {
   padding: 0.4rem 0.6rem;
   min-width: 16rem;
 }
+
+/* Resumos do grid: classes vêm de lista fixa (resumos.ts), nunca do dado. */
+.sev {
+  display: inline-block;
+  padding: 0 0.45rem;
+  border-radius: 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #fff;
+}
+.sev-critical { background: #8b0000; }
+.sev-high { background: #c0392b; }
+.sev-medium { background: #b9770e; }
+.sev-low { background: #2874a6; }
+.sev-desconhecida { background: #6c757d; }
+
+.upd-pendente { color: #b9770e; font-weight: 600; }
+.saude-estavel { color: #1e8449; }
+.saude-instavel { color: #c0392b; font-weight: 600; }
+.reinicio { font-weight: 700; }
+
+.painel-vulns {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #8884;
+  border-radius: 0.4rem;
+}
+.nota-risco { font-weight: 600; color: #b9770e; }
+
+.registro { max-width: 34rem; margin: 10vh auto; padding: 1rem; text-align: center; }
+.registro ol { text-align: left; }
+.link { background: none; border: none; text-decoration: underline; cursor: pointer; color: inherit; }
