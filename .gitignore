@@ -1,7 +1,8 @@
-# binários e saída de build
+# binários e saída de build (ancorados na raiz p/ não ignorar cmd/fmrmm-*)
 /dist/
-fmrmm-server
-fmrmm-agent
+/fmrmm-server
+/fmrmm-agent
+/fmrmm-indicator
 
 # segredos e dados de operação (NUNCA commitar)
 *.key
