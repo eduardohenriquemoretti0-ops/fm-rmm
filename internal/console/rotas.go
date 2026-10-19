@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 )
 
 // CabecalhoCerimonia carrega a chave da cerimônia WebAuthn (devolvida pelo
@@ -24,6 +25,8 @@ const limiteCorpo = 64 << 10
 //	POST /api/logout              sessão + CSRF -> revoga a sessão
 //	POST /api/registro/inicio     cert do operador PENDENTE -> opções de registro
 //	POST /api/registro/fim        cert do operador PENDENTE + atestado -> credencial
+//	POST /api/stepup/inicio       sessão + CSRF -> opções de asserção (re-toque)
+//	POST /api/stepup/fim          sessão + CSRF + asserção -> marca step-up na sessão
 //	GET  /api/agentes             sessão -> agentes visíveis ao operador (RBAC)
 //	GET  /api/agentes/{id}        sessão -> detalhe + últimos resultados de leitura (404 sem RBAC)
 //
@@ -42,11 +45,65 @@ func (c *Console) Roteador() http.Handler {
 	mux.Handle("POST /api/logout", c.protegido(c.logout))
 	mux.Handle("POST /api/registro/inicio", c.soCert(c.registroInicio))
 	mux.Handle("POST /api/registro/fim", c.soCert(c.registroFim))
+	mux.Handle("POST /api/stepup/inicio", c.protegido(c.stepUpInicio))
+	mux.Handle("POST /api/stepup/fim", c.protegido(c.stepUpFim))
 	mux.Handle("GET /api/agentes", c.protegido(c.listarAgentes))
 	mux.Handle("GET /api/agentes/{id}", c.protegido(c.detalheAgente))
 	mux.Handle("POST /api/acoes", c.protegido(c.criarAcao))
 	mux.Handle("POST /api/operador/chave-assinatura", c.protegido(c.registrarChaveAssinatura))
+	if c.estaticos != "" {
+		// "GET /" é o fallback do mux: qualquer rota não registrada cai aqui.
+		mux.Handle("GET /", estaticosHandler(c.estaticos))
+	}
 	return SecurityHeaders(mux)
+}
+
+// ServirEstaticos monta o SPA (diretório web/dist) na mesma origem do console.
+// Vazio desliga. Deve ser chamado antes de Roteador().
+func (c *Console) ServirEstaticos(dir string) { c.estaticos = dir }
+
+// estaticosHandler serve os arquivos do SPA. Nada sob /api/ chega aqui como
+// arquivo (404 JSON-neutro); http.Dir recusa traversal. O index e os demais
+// arquivos herdam Cache-Control: no-store do SecurityHeaders.
+func estaticosHandler(dir string) http.Handler {
+	fs := http.FileServer(http.Dir(dir))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+		fs.ServeHTTP(w, r)
+	})
+}
+
+func (c *Console) stepUpInicio(w http.ResponseWriter, r *http.Request) {
+	_, thumb, ok := OperadorDoContexto(r.Context())
+	_, tok, okS := SessaoDoContexto(r.Context())
+	if !ok || !okS {
+		negado(w)
+		return
+	}
+	opcoes, chave, err := c.aut.IniciaStepUp(tok, thumb)
+	if err != nil {
+		falhaCerimonia(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cerimonia": chave, "opcoes": opcoes})
+}
+
+func (c *Console) stepUpFim(w http.ResponseWriter, r *http.Request) {
+	_, thumb, ok := OperadorDoContexto(r.Context())
+	_, tok, okS := SessaoDoContexto(r.Context())
+	if !ok || !okS {
+		negado(w)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limiteCorpo)
+	if err := c.aut.FinalizaStepUp(tok, thumb, r.Header.Get(CabecalhoCerimonia), r); err != nil {
+		falhaCerimonia(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (c *Console) loginInicio(w http.ResponseWriter, r *http.Request) {
@@ -88,9 +145,11 @@ func (c *Console) sessaoAtual(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"operador": op.ID,
-		"nome":     op.Nome,
-		"csrf":     s.CSRF(),
+		"operador":  op.ID,
+		"nome":      op.Nome,
+		"csrf":      s.CSRF(),
+		"tecnico":   op.TechName,
+		"relay_url": c.relayBase,
 	})
 }
 

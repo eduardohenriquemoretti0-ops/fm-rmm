@@ -45,6 +45,7 @@ type Console struct {
 	ca        *x509.CertPool // pool da NOSSA CA: única raiz aceita para o cert do operador
 	intervalo time.Duration  // intervalo de check-in dos agentes (base do "online")
 	agora     func() time.Time
+	estaticos string // diretório do SPA (web/dist); vazio = não serve estáticos
 	relayBase string // wss:// do relay aceito em concessões (vazio = concessões desligadas)
 }
 

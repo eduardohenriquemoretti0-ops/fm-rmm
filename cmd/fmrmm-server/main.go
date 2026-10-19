@@ -32,6 +32,7 @@ import (
 
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/audit"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/catalog"
+	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/console"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/pki"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/proto"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/server"
@@ -245,7 +246,16 @@ func cmdServe(args []string) error {
 	listen := fs.String("listen", ":443", "endereço:porta do servidor de controle")
 	relayListen := fs.String("relay", ":8443", "endereço:porta do relay de sessão (vazio desliga)")
 	interval := fs.Duration("interval", 60*time.Second, "intervalo de check-in dos agentes")
+	relayURL := fs.String("relay-url", "", "URL wss:// do relay entregue ao console (obrigatória para concessões de sessão remota)")
+	consoleAddr := fs.String("console-addr", "", "endereço:porta do console web (listener dedicado, mTLS obrigatório); vazio desliga")
+	rpID := fs.String("rp-id", "", "WebAuthn: domínio do console, sem porta (obrigatório com --console-addr)")
+	var rpOrigins multi
+	fs.Var(&rpOrigins, "rp-origin", "WebAuthn: origem https do console, ex. https://rmm.exemplo.com:9443 (repetível; obrigatória com --console-addr)")
+	webDist := fs.String("web-dist", "web/dist", "diretório do SPA compilado servido pelo console")
 	fs.Parse(args)
+	if *consoleAddr != "" && (*rpID == "" || len(rpOrigins) == 0) {
+		return errors.New("--console-addr exige --rp-id e ao menos um --rp-origin")
+	}
 	st, err := openStore(*dir)
 	if err != nil {
 		return err
@@ -297,11 +307,43 @@ func cmdServe(args []string) error {
 			}
 		}()
 	}
+	// console web: listener dedicado, separado do dos agentes (que não exige
+	// cert de cliente no handshake).
+	var consoleSrv *http.Server
+	if *consoleAddr != "" {
+		var consoleSM *console.SessionManager
+		consoleSrv, consoleSM, err = novoServidorConsole(*consoleAddr, st, ca, cert, *interval, console.ConfigWebAuthn{
+			RPID: *rpID, RPOrigins: rpOrigins}, *relayURL, *webDist)
+		if err != nil {
+			return err
+		}
+		go func() {
+			log.Info("console no ar (mTLS obrigatório)", "endereco", *consoleAddr, "rp_id", *rpID)
+			if err := consoleSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("console", "erro", err)
+			}
+		}()
+		go func() {
+			t := time.NewTicker(time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					consoleSM.GC()
+				}
+			}
+		}()
+	}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = hs.Shutdown(sctx)
+		if consoleSrv != nil {
+			_ = consoleSrv.Shutdown(sctx)
+		}
 		if relaySrv != nil {
 			_ = relaySrv.Shutdown(sctx)
 		}
@@ -312,6 +354,40 @@ func cmdServe(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// novoServidorConsole monta o http.Server do console: mTLS obrigatório
+// (TLSConfigConsole), sessões 15min/10min ocioso (docs/console-seguranca.md),
+// API + estáticos do SPA na mesma origem sob SecurityHeaders.
+func novoServidorConsole(addr string, st *server.Store, ca *x509.Certificate, cert tls.Certificate,
+	interval time.Duration, wa console.ConfigWebAuthn, relayURL, webDist string) (*http.Server, *console.SessionManager, error) {
+	if relayURL != "" {
+		u, err := url.Parse(relayURL)
+		if err != nil || u.Scheme != "wss" || u.Host == "" {
+			return nil, nil, fmt.Errorf("--relay-url %q inválida: exige wss://host", relayURL)
+		}
+	}
+	if fi, err := os.Stat(filepath.Join(webDist, "index.html")); err != nil || fi.IsDir() {
+		return nil, nil, fmt.Errorf("--web-dist %q sem index.html (rode o build em web/)", webDist)
+	}
+	tc, err := console.TLSConfigConsole(ca, cert)
+	if err != nil {
+		return nil, nil, err
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	sm := console.NewSessionManager(15*time.Minute, 10*time.Minute)
+	aut, err := console.NovoAutenticador(wa, st, sm)
+	if err != nil {
+		return nil, nil, err
+	}
+	c, err := console.NovoConsole(sm, aut, st, pool, interval)
+	if err != nil {
+		return nil, nil, err
+	}
+	c.ConfigurarRelay(relayURL)
+	c.ServirEstaticos(webDist)
+	return server.NewHTTPServer(addr, c.Roteador(), tc), sm, nil
 }
 
 func countApproved(st *server.Store) int {
