@@ -12,13 +12,14 @@ import (
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/server"
 )
 
-// cmdCVE: `cve scan` consulta o OSV.dev (rede de SAÍDA do servidor, read-only
+// cmdCVE: `cve scan` consulta o OSV.dev e a NVD (rede de SAÍDA do servidor, read-only
 // para as máquinas); `cve show` só lê o banco. Ver docs/cve-osv.md.
 func cmdCVE(args []string) error {
 	fs := flag.NewFlagSet("cve", flag.ExitOnError)
 	dir := dirFlag(fs)
 	agente := fs.String("agent", "", "id do agente, ou 'todos' (scan)")
 	eco := fs.String("linux-ecosystem", os.Getenv("FMRMM_CVE_LINUX_ECOSYSTEM"), "ecossistema OSV p/ agentes Linux (ex.: Debian:12, Ubuntu:24.04)")
+	semNVD := fs.Bool("sem-nvd", false, "não consulta a NVD (só OSV); chave opcional em FMRMM_NVD_API_KEY")
 	if len(args) == 0 {
 		return errors.New("uso: cve --dir D scan|show --agent ID")
 	}
@@ -35,6 +36,9 @@ func cmdCVE(args []string) error {
 	switch sub {
 	case "scan":
 		eng := &server.Engine{St: st, EcossistemaLinux: *eco}
+		if !*semNVD {
+			eng.CPE = server.NovaFonteNVD(st) // keyless funciona (mais lento); chave via FMRMM_NVD_API_KEY
+		}
 		ids := []string{*agente}
 		if *agente == "todos" {
 			ags, err := st.Agents("approved")

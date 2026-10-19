@@ -26,7 +26,7 @@ import (
 //
 // Regra de ouro: NÃO inventar match. Item que o OSV não cobre (apps Windows por
 // nome de exibição, apps macOS) vira "não avaliado" — com marca de ALTO RISCO
-// quando for navegador/Java/runtime — e fica no gancho FonteCPE (futuro NVD).
+// quando for navegador/Java/runtime — e passa pela FonteCPE (NVD, tabela curada; cve_nvd.go).
 
 const (
 	FonteOSV = "osv.dev"
@@ -49,11 +49,21 @@ type Item struct {
 	Nome, Versao, Fabricante string
 }
 
-// FonteCPE é o GANCHO para uma fonte baseada em CPE/NVD (futuro). Quem a
-// implementar recebe os itens que o OSV não cobre e devolve achados; hoje o
-// Engine funciona com Fonte nil (tudo que o OSV não cobre fica "não avaliado").
+// ResultadoCPE é o que uma FonteCPE devolve: achados, os itens que ela de fato
+// avaliou (podem ter zero achados = sem vulnerabilidade) e os que não conseguiu
+// avaliar (com motivo). Itens que não aparecem em nenhuma lista mantêm o motivo
+// original do OSV.
+type ResultadoCPE struct {
+	Achados      []Achado
+	Avaliados    []Item
+	NaoAvaliados []NaoAvaliado
+}
+
+// FonteCPE é a fonte baseada em CPE/NVD (implementação: NVD em cve_nvd.go).
+// Recebe só o que o OSV não cobre. Em erro, devolve o ResultadoCPE parcial e o
+// erro (o Engine registra o aviso e preserva os achados anteriores).
 type FonteCPE interface {
-	Avaliar(ctx context.Context, os string, itens []Item) ([]Achado, error)
+	Avaliar(ctx context.Context, os string, itens []Item) (ResultadoCPE, error)
 }
 
 // Engine cruza inventário x OSV. Campos zerados usam padrões seguros.
@@ -212,30 +222,10 @@ func (e *Engine) Scan(ctx context.Context, agentID string) (ResultadoScan, error
 	itens := ParseInventario(ag.OS, res.Output)
 	cons, nao := e.mapear(ag.OS, itens)
 
-	// fonte CPE opcional (gancho): recebe só o que o OSV não cobre
 	var achados []Achado
 	var erros []string
-	if e.CPE != nil && len(nao) > 0 {
-		naoSet := map[string]bool{}
-		for _, n := range nao {
-			naoSet[n.Pacote+"\x00"+n.Versao] = true
-		}
-		var para []Item
-		for _, it := range itens {
-			if naoSet[it.Nome+"\x00"+it.Versao] && it.Versao != "" {
-				para = append(para, it)
-			}
-		}
-		a, err := e.CPE.Avaliar(ctx, ag.OS, para)
-		if err != nil {
-			erros = append(erros, "cpe: "+err.Error())
-		} else {
-			achados = append(achados, a...)
-		}
-	}
-
 	avaliados := 0
-	completo := len(erros) == 0
+	completo := true
 	if len(cons) > 0 {
 		a, err := e.consultarOSV(ctx, cons)
 		if err != nil {
@@ -245,6 +235,48 @@ func (e *Engine) Scan(ctx context.Context, agentID string) (ResultadoScan, error
 			achados = append(achados, a...)
 			avaliados = len(cons)
 		}
+	}
+
+	// fonte CPE/NVD: depois do OSV, só para o que o OSV não cobre
+	if e.CPE != nil && len(nao) > 0 {
+		naoSet := map[string]bool{}
+		for _, n := range nao {
+			naoSet[n.Pacote+"\x00"+n.Versao] = true
+		}
+		var para []Item
+		for _, it := range itens {
+			if naoSet[it.Nome+"\x00"+it.Versao] && it.Versao != "" && it.Versao != "?" {
+				para = append(para, it)
+			}
+		}
+		r, err := e.CPE.Avaliar(ctx, ag.OS, para)
+		if err != nil {
+			erros = append(erros, "cpe: "+err.Error())
+			completo = false
+		}
+		achados = append(achados, r.Achados...)
+		feito := map[string]bool{}
+		for _, it := range r.Avaliados {
+			feito[it.Nome+"\x00"+it.Versao] = true
+		}
+		motivo := map[string]string{}
+		for _, n := range r.NaoAvaliados {
+			motivo[n.Pacote+"\x00"+n.Versao] = n.Motivo
+		}
+		var resto []NaoAvaliado
+		for _, n := range nao {
+			k := n.Pacote + "\x00" + n.Versao
+			switch {
+			case feito[k]:
+				avaliados++
+			case motivo[k] != "":
+				n.Motivo = motivo[k]
+				resto = append(resto, n)
+			default:
+				resto = append(resto, n)
+			}
+		}
+		nao = resto
 	}
 
 	var risco []NaoAvaliado
@@ -621,5 +653,11 @@ func (s *Store) ResumoVulns(agentID string) (ResumoVulnerabilidades, error) {
 		r.Vulnerabilidades = append(r.Vulnerabilidades, ItemVuln{Achado: a, VistoEm: time.Unix(a.VistoEm, 0).UTC().Format(time.RFC3339)})
 	}
 	r.Total = len(achados)
+	for _, a := range achados {
+		if a.Fonte == FonteNVD {
+			r.Fonte = FonteOSV + "+" + FonteNVD
+			break
+		}
+	}
 	return r, nil
 }
