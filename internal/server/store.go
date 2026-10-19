@@ -17,6 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/audit"
+	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/sign"
 )
 
 const schema = `
@@ -86,6 +87,10 @@ func OpenStore(path string) (*Store, error) {
 	if err := st.initSessions(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("banco (sessões): %w", err)
+	}
+	if err := st.initListas(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("banco (listas de signers): %w", err)
 	}
 	return st, nil
 }
@@ -313,9 +318,14 @@ func (s *Store) Seen(id, heartbeat, goos string) error {
 
 // Operator é quem usa o console web. O login é por credencial WebAuthn
 // (operator_credentials); o cert mTLS do operador fica ligado por thumbprint.
+//
+// SigningPub é a chave Ed25519 de assinatura do operador (base64, pública). A
+// chave privada fica no navegador (WebCrypto, não exportável); o servidor só
+// guarda a pública, que entra na lista de signers assinada offline pela raiz.
 type Operator struct {
 	ID, Nome, DisplayName, CertThumbprint, Status, TechName string
 	CriadoEm                                                int64
+	SigningPub                                              string
 }
 
 // OperatorCredential é uma chave WebAuthn do operador (o cadastro exige duas:
@@ -328,11 +338,11 @@ type OperatorCredential struct {
 	CriadoEm                 int64
 }
 
-const operatorCols = `id, nome, display_name, cert_thumbprint, status, criado_em, tech_name`
+const operatorCols = `id, nome, display_name, cert_thumbprint, status, criado_em, tech_name, signing_pub`
 
 func scanOperator(sc interface{ Scan(...any) error }) (Operator, error) {
 	var o Operator
-	err := sc.Scan(&o.ID, &o.Nome, &o.DisplayName, &o.CertThumbprint, &o.Status, &o.CriadoEm, &o.TechName)
+	err := sc.Scan(&o.ID, &o.Nome, &o.DisplayName, &o.CertThumbprint, &o.Status, &o.CriadoEm, &o.TechName, &o.SigningPub)
 	return o, err
 }
 
@@ -388,6 +398,18 @@ func (s *Store) SetOperatorThumbprint(id, thumb string) error {
 		return errors.New("thumbprint do cert não pode ser vazio")
 	}
 	r, err := s.db.Exec(`UPDATE operators SET cert_thumbprint=? WHERE id=?`, thumb, id)
+	return oneRow(r, err)
+}
+
+// SetOperatorSigningPub grava (ou troca, na rotação) a chave pública de
+// assinatura do operador. A pública é normalizada (base64 padrão, 32 bytes).
+// Pub repetida em outro operador é recusada pelo índice único.
+func (s *Store) SetOperatorSigningPub(id, pubB64 string) error {
+	pub, err := sign.DecodePub(pubB64)
+	if err != nil {
+		return fmt.Errorf("chave de assinatura do operador: %w", err)
+	}
+	r, err := s.db.Exec(`UPDATE operators SET signing_pub=? WHERE id=?`, sign.EncodePub(pub), id)
 	return oneRow(r, err)
 }
 

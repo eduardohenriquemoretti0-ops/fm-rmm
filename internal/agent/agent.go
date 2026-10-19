@@ -309,9 +309,10 @@ func (ag *Agent) CheckinOnce(ctx context.Context) error {
 	if err := ag.post(ctx, c, "/v1/checkin", proto.CheckinRequest{Heartbeat: ag.heartbeat()}, &resp); err != nil {
 		return err
 	}
-	// T5b: quando o transporte da lista de signers existir, a resposta do check-in
-	// a entrega aqui via ag.IngerirListaSigners(raw, assinatura). Ainda não há
-	// campo no protocolo: sem lista, o trust-set fica só com a raiz.
+	// lista de signers corrente (trust-set): ingerida ANTES dos jobs desta resposta
+	if resp.Lista != nil {
+		ag.aplicarListaDoCheckin(resp.Lista)
+	}
 	if resp.IntervalSec >= 10 && resp.IntervalSec <= 3600 {
 		ag.interval = time.Duration(resp.IntervalSec) * time.Second
 	}

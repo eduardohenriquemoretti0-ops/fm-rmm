@@ -5,10 +5,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -56,6 +58,12 @@ Operação:
   session  --dir D list
   view     --dir D --relay-url wss://host:8443 --session ses-... --token TOK --out DIR [--frames N]  (console: recebe e salva a tela)
   audit    --dir D verify | list [--tail 50]
+Lista de signers (trust-set dos agentes; a RAIZ fica OFFLINE):
+  signers  --dir D export [--out export.json]              versão atual + operadores aptos (sem segredos)
+  signers  build --key admin.key (--export export.json | --operators-file ops.json [--versao-atual N]) [--out DIR]
+                                                           OFFLINE: monta e assina trust-list.json + trust-list.sig
+  signers  --dir D publish --raiz KEYID --lista trust-list.json --sig trust-list.sig
+                                                           publica a lista assinada (confere a raiz; só versão maior)
   catalog                                                  ações disponíveis
   version`
 
@@ -89,6 +97,8 @@ func main() {
 		err = cmdView(args)
 	case "audit":
 		err = cmdAudit(args)
+	case "signers":
+		err = cmdSigners(args)
 	case "catalog":
 		cmdCatalog()
 	case "version":
@@ -835,6 +845,162 @@ func cmdView(args []string) error {
 		}
 	}
 	return nil
+}
+
+// cmdSigners: lista de signers. export e publish falam com o banco (no host do
+// servidor); build é OFFLINE e nunca abre o banco nem recebe nada do servidor.
+func cmdSigners(args []string) error {
+	if len(args) > 0 && args[0] == "build" {
+		return cmdSignersBuild(args[1:])
+	}
+	fs := flag.NewFlagSet("signers", flag.ExitOnError)
+	dir := dirFlag(fs)
+	fs.Parse(args)
+	rest := fs.Args()
+	if len(rest) == 0 {
+		return errors.New("uso: signers export|build|publish")
+	}
+	switch rest[0] {
+	case "export":
+		ef := flag.NewFlagSet("signers export", flag.ExitOnError)
+		out := ef.String("out", "", "arquivo de saída (vazio = stdout)")
+		ef.Parse(rest[1:])
+		st, err := openStore(*dir)
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		exp, err := st.ExportarLista()
+		if err != nil {
+			return err
+		}
+		b, err := json.MarshalIndent(exp, "", "  ")
+		if err != nil {
+			return err
+		}
+		if *out == "" {
+			fmt.Println(string(b))
+			return nil
+		}
+		if err := os.WriteFile(*out, append(b, '\n'), 0o600); err != nil {
+			return err
+		}
+		fmt.Printf("export gravado: %s (versão atual %d, %d operador(es) apto(s))\n", *out, exp.VersaoAtual, len(exp.Operadores))
+		return nil
+	case "publish":
+		pf := flag.NewFlagSet("signers publish", flag.ExitOnError)
+		raizID := pf.String("raiz", "", "key_id da chave RAIZ (o SignerID do bundle)")
+		lista := pf.String("lista", "", "arquivo trust-list.json")
+		sigArq := pf.String("sig", "", "arquivo trust-list.sig (base64)")
+		pf.Parse(rest[1:])
+		if *raizID == "" || *lista == "" || *sigArq == "" {
+			return errors.New("informe --raiz, --lista e --sig")
+		}
+		raw, err := os.ReadFile(*lista)
+		if err != nil {
+			return err
+		}
+		sigB64, err := os.ReadFile(*sigArq)
+		if err != nil {
+			return err
+		}
+		sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sigB64)))
+		if err != nil {
+			return fmt.Errorf("assinatura: base64 inválido: %w", err)
+		}
+		signers, err := server.LoadSigners(*dir)
+		if err != nil {
+			return err
+		}
+		raiz, ok := signers[*raizID]
+		if !ok {
+			return fmt.Errorf("raiz %s não está nos signers do servidor (use o SignerID do bundle)", *raizID)
+		}
+		st, err := openStore(*dir)
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		versao, err := server.PublicarLista(st, raiz, bytes.TrimRight(raw, "\n"), sig, actor())
+		if err != nil {
+			return err
+		}
+		fmt.Printf("lista de signers v%d publicada; os agentes recebem no próximo check-in\n", versao)
+		return nil
+	}
+	return fmt.Errorf("subcomando desconhecido: %s", rest[0])
+}
+
+// cmdSignersBuild roda OFFLINE, na máquina do admin que guarda a chave raiz.
+func cmdSignersBuild(args []string) error {
+	fs := flag.NewFlagSet("signers build", flag.ExitOnError)
+	key := fs.String("key", "", "chave privada RAIZ (offline)")
+	export := fs.String("export", "", "export do servidor (signers export)")
+	opsArq := fs.String("operators-file", "", "OU: JSON com a lista de operadores (array de signer)")
+	versaoAtual := fs.Int("versao-atual", 0, "com --operators-file: versão da lista em vigor (a nova será +1)")
+	outDir := fs.String("out", ".", "pasta de saída de trust-list.json e trust-list.sig")
+	fs.Parse(args)
+	if *key == "" {
+		return errors.New("informe --key (chave raiz)")
+	}
+	if (*export == "") == (*opsArq == "") {
+		return errors.New("informe exatamente um de --export ou --operators-file")
+	}
+	priv, err := sign.LoadPrivate(*key)
+	if err != nil {
+		return fmt.Errorf("chave raiz: %w", err)
+	}
+	var ops []sign.SignerEntry
+	atual := *versaoAtual
+	if *export != "" {
+		var exp server.ExportLista
+		if err := lerJSONEstrito(*export, &exp); err != nil {
+			return fmt.Errorf("export: %w", err)
+		}
+		ops, atual = exp.Operadores, exp.VersaoAtual
+	} else if err := lerJSONEstrito(*opsArq, &ops); err != nil {
+		return fmt.Errorf("operadores: %w", err)
+	}
+	raw, sig, versao, err := server.ConstruirLista(priv, atual, ops, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(*outDir, 0o755); err != nil {
+		return err
+	}
+	// O-EXCL: nunca sobrescreve uma lista anterior (guarde as versões)
+	if err := escreveNovo(filepath.Join(*outDir, "trust-list.json"), append(raw, '\n')); err != nil {
+		return err
+	}
+	if err := escreveNovo(filepath.Join(*outDir, "trust-list.sig"), []byte(base64.StdEncoding.EncodeToString(sig)+"\n")); err != nil {
+		return err
+	}
+	fmt.Printf("lista v%d assinada pela raiz (offline): %s e %s\n", versao, filepath.Join(*outDir, "trust-list.json"), filepath.Join(*outDir, "trust-list.sig"))
+	fmt.Printf("%d operador(es) + raiz. Leve os dois arquivos ao servidor e rode: signers publish\n", len(ops))
+	return nil
+}
+
+func lerJSONEstrito(path string, v any) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
+
+func escreveNovo(path string, b []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return fmt.Errorf("%s: %w (mova a versão anterior antes)", path, err)
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func cmdCatalog() {

@@ -241,6 +241,12 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 			resp.Grants = append(resp.Grants, sg)
 		}
 	}
+	// lista de signers publicada: o agente ingere (anti-downgrade) e amplia o trust-set
+	if v, raw, sig, err := s.Store.listaAtual(); err != nil {
+		s.Log.Error("lista de signers", "agente", a.ID, "erro", err)
+	} else if v > 0 {
+		resp.Lista = &proto.SignedSignerList{Raw: raw, Sig: sig}
+	}
 	for _, j := range jobs {
 		var sj proto.SignedJob
 		if err := json.Unmarshal([]byte(j.Signed), &sj); err != nil {

@@ -52,10 +52,21 @@ type CheckinRequest struct {
 	Heartbeat Heartbeat `json:"heartbeat"`
 }
 
+// SignedSignerList é a lista de signers (trust-set do agente) já assinada pela
+// chave RAIZ offline. Raw são os bytes canônicos exatos da lista; Sig é a
+// assinatura Ed25519 destacada. Ambos viajam em base64 (sem ambiguidade).
+type SignedSignerList struct {
+	Raw []byte `json:"raw"`
+	Sig []byte `json:"sig"`
+}
+
 type CheckinResponse struct {
 	Jobs        []SignedJob   `json:"jobs"`
 	Grants      []SignedGrant `json:"grants,omitempty"` // sessões remotas autorizadas
 	IntervalSec int           `json:"interval_sec"`
+	// Lista é a lista de signers corrente (omitida se o servidor ainda não tem uma).
+	// O agente ingere e aplica anti-downgrade; lista repetida é o caso normal.
+	Lista *SignedSignerList `json:"lista,omitempty"`
 }
 
 // Result é o retorno de um job. Autenticado pelo mTLS do agente.

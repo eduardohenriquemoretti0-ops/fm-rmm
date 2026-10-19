@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/proto"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/sign"
 )
 
@@ -22,6 +23,10 @@ import (
 // Anti-downgrade: a maior versão já aceita fica gravada em trust.json. Lista
 // com versão menor ou igual é recusada, mesmo que a assinatura esteja correta.
 // Isso impede replay de uma lista antiga que reabilitaria um operador revogado.
+
+// errListaRepetida: a versão recebida é a mesma já aceita. O servidor serve a
+// lista corrente em todo check-in, então isso é o caso normal (não é ataque).
+var errListaRepetida = errors.New("lista repetida (mesma versão já aceita)")
 
 // fileTrust é o arquivo, dentro do diretório de dados, com a lista aceita.
 const fileTrust = "trust.json"
@@ -90,7 +95,10 @@ func (t *trustStore) ingerir(raw, assinatura []byte, now time.Time) error {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if l.Version <= t.maxVersion {
+	if l.Version == t.maxVersion {
+		return fmt.Errorf("%w: %w: v%d", sign.ErrListaVersao, errListaRepetida, l.Version)
+	}
+	if l.Version < t.maxVersion {
 		return fmt.Errorf("%w: recebida v%d, já aceita v%d", sign.ErrListaVersao, l.Version, t.maxVersion)
 	}
 	ts, err := sign.TrustFromList(t.raiz, l, now)
@@ -120,6 +128,17 @@ func (ag *Agent) IngerirListaSigners(raw, assinatura []byte) error {
 		return errors.New("trust-set não inicializado")
 	}
 	return ag.trust.ingerir(raw, assinatura, ag.now())
+}
+
+// aplicarListaDoCheckin ingere a lista que veio no check-in. Lista repetida fica
+// em silêncio; qualquer outra recusa (assinatura, forma, downgrade) vai ao log.
+// Não interrompe o check-in: jobs e grants da mesma resposta seguem o fluxo normal.
+func (ag *Agent) aplicarListaDoCheckin(l *proto.SignedSignerList) {
+	err := ag.IngerirListaSigners(l.Raw, l.Sig)
+	if err == nil || errors.Is(err, errListaRepetida) {
+		return
+	}
+	ag.Log.Warn("lista de signers recusada", "erro", err)
 }
 
 // confianca é o trust-set usado para verificar jobs e concessões.
