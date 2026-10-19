@@ -99,6 +99,54 @@ echo "== Equipamento"; system_profiler SPHardwareDataType | grep -E 'Model Name|
 	})
 
 	register(Action{
+		Name:    "hardware",
+		Desc:    "Fingerprint de hardware: UUID do sistema, placa-mãe, RAM por pente (serial/part), discos (serial/WWN/SMART) e status de ativação (nunca a chave)",
+		Timeout: 120 * time.Second,
+		Scripts: map[string]string{
+			"windows": psHead + `
+$csp = Get-CimInstance Win32_ComputerSystemProduct
+$bb  = Get-CimInstance Win32_BaseBoard
+# ApplicationID do Windows; trazemos só o STATUS de licença, nunca a chave.
+$winApp = '55c92734-d682-4d71-983e-d6ec3f16059f'
+[pscustomobject]@{
+  system_uuid = $csp.UUID
+  placa_mae = [pscustomobject]@{ fabricante = $bb.Manufacturer; produto = $bb.Product; serie = $bb.SerialNumber }
+  memoria = @(Get-CimInstance Win32_PhysicalMemory | ForEach-Object {
+    [pscustomobject]@{ slot = $_.DeviceLocator; fabricante = $_.Manufacturer; part = ($_.PartNumber -replace '\s+$',''); serial = $_.SerialNumber; gb = [math]::Round($_.Capacity / 1GB, 0) } })
+  discos = @(Get-CimInstance Win32_DiskDrive | ForEach-Object {
+    [pscustomobject]@{ modelo = $_.Model; serial = ($_.SerialNumber -replace '\s+$',''); interface = $_.InterfaceType; tamanho_gb = [math]::Round($_.Size / 1GB, 0) } })
+  discos_fisicos = @(Get-CimInstance -Namespace 'root\Microsoft\Windows\Storage' -ClassName MSFT_PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
+    [pscustomobject]@{ serial = $_.SerialNumber; tipo = $_.MediaType; saude = $_.HealthStatus } })
+  ativacao = @(Get-CimInstance SoftwareLicensingProduct -Filter "ApplicationID='$winApp' AND PartialProductKey IS NOT NULL" -ErrorAction SilentlyContinue | ForEach-Object {
+    [pscustomobject]@{ nome = $_.Name; licenciado = ($_.LicenseStatus -eq 1); status_codigo = $_.LicenseStatus } })
+} | ConvertTo-Json -Depth 5
+`,
+			"linux": shHead + `
+echo "== system_uuid"; cat /sys/class/dmi/id/product_uuid 2>/dev/null || echo "indisponivel (precisa root)"
+echo "== placa_mae"; for f in board_vendor board_name board_serial; do [ -r /sys/class/dmi/id/$f ] && echo "$f: $(cat /sys/class/dmi/id/$f)"; done
+echo "== memoria (dmidecode -t 17)"
+dmidecode -t 17 2>/dev/null | grep -E '^[[:space:]]*(Size|Locator|Serial Number|Part Number):' | grep -v 'Bank Locator' || echo "dmidecode indisponivel (precisa root)"
+echo "== discos (serial/WWN)"; lsblk -d -o NAME,MODEL,SIZE,SERIAL,WWN,TYPE 2>/dev/null | grep -vi loop || echo "lsblk indisponivel"
+echo "== SMART"
+for d in $(lsblk -dn -o NAME,TYPE 2>/dev/null | awk '$2=="disk"{print $1}'); do
+  r=$(smartctl -H /dev/$d 2>/dev/null | grep -iE 'overall-health|SMART Health' | head -1)
+  echo "/dev/$d: ${r:-smartctl indisponivel}"
+done
+echo "== ativacao"; echo "n/a (Linux)"
+exit 0
+`,
+			"darwin": shHead + `
+echo "== system_uuid"; ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/{print $4}'
+echo "== placa_mae/serie"; system_profiler SPHardwareDataType 2>/dev/null | grep -E 'Serial Number|Model Identifier'
+echo "== memoria"; system_profiler SPMemoryDataType 2>/dev/null | grep -E '^ *(Size|Serial Number|Part Number|Location|Bank):'
+echo "== discos"; system_profiler SPNVMeDataType SPSerialATADataType 2>/dev/null | grep -E 'Model|Serial Number|Capacity|S.M.A.R.T|TRIM'
+echo "== ativacao"; echo "n/a (macOS)"
+exit 0
+`,
+		},
+	})
+
+	register(Action{
 		Name:    "software",
 		Desc:    "Programas instalados (nome, versão, fabricante)",
 		Timeout: 120 * time.Second,

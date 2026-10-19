@@ -69,3 +69,24 @@ func TestTokenUsoUnico(t *testing.T) {
 		t.Fatalf("token inventado aceito: %v", err)
 	}
 }
+
+func TestAgentOnline(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	cases := []struct {
+		name     string
+		lastSeen int64
+		want     bool
+	}{
+		{"nunca viu", 0, false},
+		{"agora", now.Unix(), true},
+		{"1 intervalo atrás", now.Add(-60 * time.Second).Unix(), true},
+		{"2x intervalo (limite)", now.Add(-120 * time.Second).Unix(), true},
+		{"velho demais", now.Add(-121 * time.Second).Unix(), false},
+	}
+	for _, c := range cases {
+		a := Agent{LastSeen: c.lastSeen}
+		if got := a.Online(60*time.Second, now); got != c.want {
+			t.Errorf("%s: Online=%v, quer %v", c.name, got, c.want)
+		}
+	}
+}

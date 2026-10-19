@@ -361,13 +361,21 @@ func cmdAgents(args []string) error {
 			return err
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "AGENTE\tHOST\tSO\tSTATUS\tÚLTIMO CONTATO\tIP DA INSCRIÇÃO")
+		fmt.Fprintln(tw, "AGENTE\tHOST\tSO\tSTATUS\tCONEXÃO\tÚLTIMO CONTATO\tIP DA INSCRIÇÃO")
+		now := time.Now()
+		// tolerância = 2× o intervalo padrão do check-in (60s); uma batida perdida
+		// ainda conta como online.
+		const checkinInterval = 60 * time.Second
 		for _, a := range ags {
 			seen := "-"
 			if a.LastSeen > 0 {
 				seen = time.Since(time.Unix(a.LastSeen, 0)).Round(time.Second).String() + " atrás"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", a.ID, a.Hostname, a.OS, a.Status, seen, a.RemoteAddr)
+			conexao := "offline"
+			if a.Online(checkinInterval, now) {
+				conexao = "online"
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.ID, a.Hostname, a.OS, a.Status, conexao, seen, a.RemoteAddr)
 		}
 		return tw.Flush()
 	case "approve", "approve-all":

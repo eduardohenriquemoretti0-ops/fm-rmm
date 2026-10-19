@@ -9,6 +9,8 @@ func TestValidate(t *testing.T) {
 	}{
 		{"info", "windows", nil},
 		{"inventario", "linux", nil},
+		{"hardware", "windows", nil},
+		{"hardware", "linux", nil},
 		{"seguranca", "darwin", nil},
 		{"reiniciar_servico", "windows", map[string]string{"nome": "Spooler"}},
 		{"reiniciar_servico", "linux", map[string]string{"nome": "cups"}},

@@ -176,6 +176,15 @@ type Agent struct {
 	pollHash                                                                   string
 }
 
+// Online diz se o agente deu check-in dentro de 2× o intervalo (janela de
+// tolerância para uma batida perdida). Derivado, não armazenado.
+func (a Agent) Online(interval time.Duration, now time.Time) bool {
+	if a.LastSeen == 0 {
+		return false
+	}
+	return now.Sub(time.Unix(a.LastSeen, 0)) <= 2*interval
+}
+
 // Enroll consome um uso do token e cria o agente PENDENTE (sem auto-join).
 func (s *Store) Enroll(token, hostname, goos, csrPEM, remote string) (agentID, poll string, err error) {
 	tx, err := s.db.Begin()
