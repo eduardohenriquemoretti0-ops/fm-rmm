@@ -31,6 +31,7 @@ const limiteCorpo = 64 << 10
 //	POST /api/stepup/fim          sessão + CSRF + asserção -> marca step-up na sessão
 //	GET  /api/agentes             sessão -> agentes visíveis ao operador (RBAC)
 //	GET  /api/agentes/{id}        sessão -> detalhe + últimos resultados de leitura (404 sem RBAC)
+//	GET  /api/agentes/{id}/vulnerabilidades  sessão -> resumo de CVEs (OSV; lê o banco, 404 sem RBAC)
 //
 // O registro não tem sessão (o operador ainda não loga): fica atrás só do cert,
 // e o Autenticador recusa tudo que não seja operador 'pendente'. A ativação
@@ -51,6 +52,7 @@ func (c *Console) Roteador() http.Handler {
 	mux.Handle("POST /api/stepup/fim", c.protegido(c.stepUpFim))
 	mux.Handle("GET /api/agentes", c.protegido(c.listarAgentes))
 	mux.Handle("GET /api/agentes/{id}", c.protegido(c.detalheAgente))
+	mux.Handle("GET /api/agentes/{id}/vulnerabilidades", c.protegido(c.vulnerabilidadesAgente))
 	mux.Handle("POST /api/acoes", c.protegido(c.criarAcao))
 	mux.Handle("POST /api/operador/chave-assinatura", c.protegido(c.registrarChaveAssinatura))
 	if c.estaticos != "" {

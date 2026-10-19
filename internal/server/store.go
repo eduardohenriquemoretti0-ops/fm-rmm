@@ -97,6 +97,10 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("banco (ações de operador): %w", err)
 	}
+	if err := st.initCVE(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("banco (vulnerabilidades): %w", err)
+	}
 	return st, nil
 }
 

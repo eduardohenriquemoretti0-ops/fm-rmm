@@ -73,6 +73,8 @@ Lista de signers (trust-set dos agentes; a RAIZ fica OFFLINE):
                                                            OFFLINE: monta e assina trust-list.json + trust-list.sig
   signers  --dir D publish --raiz KEYID --lista trust-list.json --sig trust-list.sig
                                                            publica a lista assinada (confere a raiz; só versão maior)
+  cve      --dir D scan --agent ID|todos [--linux-ecosystem Debian:12]   cruza o inventário software com o OSV.dev (read-only)
+  cve      --dir D show --agent ID                         resumo (JSON) das vulnerabilidades já gravadas
   catalog                                                  ações disponíveis
   version`
 
@@ -110,6 +112,8 @@ func main() {
 		err = cmdSigners(args)
 	case "operadores":
 		err = cmdOperadores(args)
+	case "cve":
+		err = cmdCVE(args)
 	case "catalog":
 		cmdCatalog()
 	case "version":
