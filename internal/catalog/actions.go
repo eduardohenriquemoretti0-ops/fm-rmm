@@ -179,6 +179,41 @@ done
 	})
 
 	register(Action{
+		Name:    "saude",
+		Desc:    "Saúde/estabilidade: desligamentos inesperados, BSOD/panic nos últimos 7 dias",
+		Timeout: 120 * time.Second,
+		Scripts: map[string]string{
+			"windows": psHead + `
+$desde = (Get-Date).AddDays(-7)
+# 41 = desligamento inesperado; 1001 = BugCheck (BSOD); 6008 = shutdown sujo
+$ev = @(Get-WinEvent -FilterHashtable @{LogName='System'; Id=41,1001,6008; StartTime=$desde} -ErrorAction SilentlyContinue |
+  ForEach-Object { [pscustomobject]@{ id = $_.Id; em = $_.TimeCreated.ToString('s'); msg = (($_.Message -split "` + "`n" + `")[0]).Trim() } })
+[pscustomobject]@{
+  janela_dias           = 7
+  eventos_instabilidade = $ev.Count
+  estavel               = ($ev.Count -eq 0)
+  eventos               = $ev
+} | ConvertTo-Json -Depth 4
+`,
+			"linux": shHead + `
+n=$(journalctl -k --since "7 days ago" -p warning 2>/dev/null | grep -icE 'panic|oops|BUG:|out of memory|segfault|hung task') || n=0
+echo "janela_dias: 7"
+echo "eventos_instabilidade: $n"
+if [ "$n" -eq 0 ]; then echo "estavel: sim"; else echo "estavel: nao"; fi
+echo "boots_registrados: $(journalctl --list-boots 2>/dev/null | wc -l | tr -d ' ')"
+exit 0
+`,
+			"darwin": shHead + `
+n=$(ls -1 /Library/Logs/DiagnosticReports/*.panic 2>/dev/null | wc -l | tr -d ' ')
+echo "janela_dias: aprox (conta panics retidos)"
+echo "panics: $n"
+if [ "$n" -eq 0 ]; then echo "estavel: sim"; else echo "estavel: nao"; fi
+exit 0
+`,
+		},
+	})
+
+	register(Action{
 		Name: "servicos",
 		Desc: "Serviços do sistema com estado e tipo de inicialização",
 		Scripts: map[string]string{
