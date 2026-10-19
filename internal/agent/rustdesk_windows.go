@@ -20,31 +20,36 @@ import (
 // no Windows. Resolve o problema de Session 0: o serviço do RustDesk captura a
 // área de trabalho do usuário (o nosso agente em SYSTEM não consegue sozinho).
 //
-// Endurecimento aplicado a cada sessão:
+// O serviço do RustDesk roda como LocalService e guarda config e ID no PERFIL
+// do LocalService. Nosso agente roda como SYSTEM (outro perfil). Por isso as
+// chamadas ao rustdesk.exe (--option, --password, --get-id) são executadas NA
+// CONTA LocalService, via tarefa agendada, para acertarem o perfil do serviço.
+//
+// Endurecimento por sessão:
 //   - aponta o RustDesk só para o NOSSO hbbs/hbbr, com a NOSSA chave (pinning);
 //   - senha de USO ÚNICO por sessão (vem na concessão assinada), limpa no fim;
 //   - sem senha permanente de acesso desatendido fora da sessão autorizada;
-//   - o indicador do RustDesk (e o nosso) fica visível; nada é ocultado.
+//   - permissões por modo (view desliga teclado/clipboard/arquivo);
+//   - indicador do RustDesk e o nosso ficam visíveis; nada é ocultado.
 //
-// Os pixels passam pelo hbbr do RustDesk, não pelo nosso relay. O nosso canal
-// (conn) leva só o controle: informa ao console o ID do RustDesk desta máquina.
+// Os pixels passam pelo hbbr do RustDesk; o nosso canal (conn) leva só o
+// controle: informa ao console o ID do RustDesk desta máquina.
 type rustdeskMedia struct {
-	log  *slog.Logger
-	exe  string // caminho do rustdesk.exe
-	host string // hbbs (ex.: 10.0.2.2)
-	key  string // chave pública do hbbs (base64)
+	log     *slog.Logger
+	exe     string
+	host    string
+	key     string
+	workDir string // onde gravar a saída capturada das chamadas LocalService
 }
 
-// NewRustDeskMedia cria o motor. host/key vêm do bundle (pinning do servidor).
 func NewRustDeskMedia(log *slog.Logger, host, key string) SessionMedia {
-	return &rustdeskMedia{log: log, exe: rustdeskExe(), host: host, key: key}
+	return &rustdeskMedia{log: log, exe: rustdeskExe(), host: host, key: key, workDir: DataDir()}
 }
 
 func rustdeskExe() string {
-	// instalação padrão do RustDesk no Windows
 	for _, p := range []string{
-		filepath.Join(os.Getenv("ProgramFiles"), "RustDesk", "rustdesk.exe"),
-		filepath.Join(os.Getenv("ProgramW6432"), "RustDesk", "rustdesk.exe"),
+		filepath.Join(os.Getenv("ProgramFiles"), "RustDesk", "RustDesk.exe"),
+		filepath.Join(os.Getenv("ProgramW6432"), "RustDesk", "RustDesk.exe"),
 	} {
 		if p != "" {
 			if _, err := os.Stat(p); err == nil {
@@ -52,14 +57,52 @@ func rustdeskExe() string {
 			}
 		}
 	}
-	return "rustdesk.exe" // tenta no PATH
+	return `C:\Program Files\RustDesk\RustDesk.exe`
 }
 
-func (m *rustdeskMedia) rd(ctx context.Context, args ...string) (string, error) {
-	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(cctx, m.exe, args...).CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+const rdTask = "FMRMM-RustDesk-cfg"
+
+// rdLocalService roda `rustdesk.exe <args>` NA CONTA LocalService (mesma do
+// serviço) via tarefa agendada e devolve o que o RustDesk escreveu no stdout.
+func (m *rustdeskMedia) rdLocalService(ctx context.Context, args ...string) (string, error) {
+	outFile := filepath.Join(m.workDir, "rd-out.txt")
+	_ = os.Remove(outFile)
+	// cmd /c " "exe" args > out 2>&1 "  — aspas internas dobradas para o schtasks
+	inner := fmt.Sprintf(`cmd /c ""%s" %s > "%s" 2>&1"`, m.exe, strings.Join(args, " "), outFile)
+	run := func(a ...string) error {
+		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(cctx, "schtasks", a...).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("schtasks %s: %v: %s", a[0], err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+	if err := run("/Create", "/TN", rdTask, "/TR", inner, "/SC", "ONCE", "/ST", "00:00",
+		"/RU", "NT AUTHORITY\\LocalService", "/RL", "LIMITED", "/F"); err != nil {
+		return "", err
+	}
+	defer run("/Delete", "/TN", rdTask, "/F") //nolint:errcheck
+	if err := run("/Run", "/TN", rdTask); err != nil {
+		return "", err
+	}
+	// a tarefa roda assíncrona; espera o arquivo de saída aparecer/estabilizar
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(outFile); err == nil {
+			time.Sleep(400 * time.Millisecond) // deixa terminar de escrever
+			b2, _ := os.ReadFile(outFile)
+			if len(b2) >= len(b) {
+				return strings.TrimSpace(string(b2)), nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return "", errors.New("rustdesk (LocalService) não respondeu no tempo limite")
 }
 
 func (m *rustdeskMedia) Serve(ctx context.Context, conn net.Conn, mode, secret string) error {
@@ -69,55 +112,50 @@ func (m *rustdeskMedia) Serve(ctx context.Context, conn net.Conn, mode, secret s
 	if m.host == "" || m.key == "" {
 		return errors.New("rustdesk: bundle sem host/chave do servidor (rustdesk_host/rustdesk_key)")
 	}
-	if _, err := os.Stat(m.exe); err != nil && !filepath.IsAbs(m.exe) {
-		// deixa seguir se for nome no PATH; só avisa quando é caminho absoluto ausente
-	} else if err != nil {
-		return fmt.Errorf("rustdesk não instalado (%s): integrar via instalador", m.exe)
+	if _, err := os.Stat(m.exe); err != nil {
+		return fmt.Errorf("rustdesk não instalado (%s): use o instalador do RustDesk", m.exe)
 	}
 
-	// 1) pinning: aponta SÓ para o nosso servidor, com a nossa chave
-	if out, err := m.rd(ctx, "--option", "custom-rendezvous-server", m.host); err != nil {
+	// 1) pinning: só o nosso servidor, com a nossa chave (config do serviço)
+	if out, err := m.rdLocalService(ctx, "--option", "custom-rendezvous-server", m.host); err != nil {
 		return fmt.Errorf("rustdesk config servidor: %v: %s", err, out)
 	}
-	if out, err := m.rd(ctx, "--option", "key", m.key); err != nil {
-		return fmt.Errorf("rustdesk config chave: %v: %s", err, out)
+	if _, err := m.rdLocalService(ctx, "--option", "key", m.key); err != nil {
+		return fmt.Errorf("rustdesk config chave: %w", err)
 	}
-	// 2) permissões por modo: view = só ver; control = teclado/mouse
+	// 2) permissões por modo
 	enableInput := "N"
 	if mode == "control" {
 		enableInput = "Y"
 	}
-	_, _ = m.rd(ctx, "--option", "enable-keyboard", enableInput)
-	_, _ = m.rd(ctx, "--option", "enable-clipboard", "N")   // sem área de transferência
-	_, _ = m.rd(ctx, "--option", "enable-file-transfer", "N") // sem transferência de arquivo neste PoC
+	_, _ = m.rdLocalService(ctx, "--option", "enable-keyboard", enableInput)
+	_, _ = m.rdLocalService(ctx, "--option", "enable-clipboard", "N")
+	_, _ = m.rdLocalService(ctx, "--option", "enable-file-transfer", "N")
 
-	// 3) senha de USO ÚNICO desta sessão
-	if out, err := m.rd(ctx, "--password", secret); err != nil {
-		return fmt.Errorf("rustdesk senha da sessão: %v: %s", err, out)
+	// 3) senha de USO ÚNICO desta sessão; limpa no fim (sem acesso depois)
+	if _, err := m.rdLocalService(ctx, "--password", secret); err != nil {
+		return fmt.Errorf("rustdesk senha da sessão: %w", err)
 	}
-	// limpa a senha no fim, aconteça o que acontecer (sem acesso desatendido depois)
 	defer func() {
-		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		_ = exec.CommandContext(cctx, m.exe, "--password", "").Run()
+		_, _ = m.rdLocalService(cctx, "--password", `""`)
 	}()
 
-	// 4) ID desta máquina no nosso rendezvous
-	id, err := m.rd(ctx, "--get-id")
-	if err != nil || id == "" {
-		return fmt.Errorf("rustdesk get-id: %v", err)
+	// 4) ID desta máquina no nosso rendezvous (lido no perfil do LocalService)
+	id, err := m.rdLocalService(ctx, "--get-id")
+	if err != nil || lastLine(id) == "" {
+		return fmt.Errorf("rustdesk get-id: %v (saída: %q)", err, id)
 	}
 	id = lastLine(id)
 
-	// 5) informa o console pelo canal de controle (ID; a senha o console já tem
-	//    da concessão). Os pixels vão pelo hbbr do RustDesk.
+	// 5) informa o console pelo canal de controle; pixels vão pelo hbbr
 	msg, _ := json.Marshal(map[string]string{"engine": "rustdesk", "id": id, "host": m.host})
 	if err := writeFrame(conn, msg); err != nil {
 		return err
 	}
 	m.log.Info("sessão RustDesk armada", "id", id, "modo", mode)
 
-	// mantém a sessão até expirar/cancelar; a senha é limpa no defer
 	<-ctx.Done()
 	return ctx.Err()
 }
