@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/ed25519"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -163,4 +164,33 @@ func PublicarLista(st *Store, raiz ed25519.PublicKey, raw, sig []byte, actor str
 	}
 	// auditoria depois do commit: Audit abre a própria transação
 	return l.Version, st.Audit("lista.publicada", actor, map[string]any{"versao": l.Version, "signers": len(l.Signers)})
+}
+
+// OperadorNaListaPublicada diz se keyID consta como signer de papel operator,
+// ainda dentro da validade (not_after), na lista PUBLICADA em vigor. É o que o
+// agente realmente confia: o status "ativo" no banco não basta. Sem lista
+// publicada, ou com lista ilegível, devolve false (fail-closed). A assinatura da
+// raiz já foi conferida em PublicarLista, antes de gravar.
+func (s *Store) OperadorNaListaPublicada(keyID string, agora time.Time) (bool, error) {
+	versao, raw, _, err := s.listaAtual()
+	if err != nil {
+		return false, err
+	}
+	if versao == 0 || len(raw) == 0 {
+		return false, nil
+	}
+	var l sign.SignerList
+	if err := json.Unmarshal(raw, &l); err != nil {
+		return false, fmt.Errorf("lista publicada ilegível: %w", err)
+	}
+	for _, e := range l.Signers {
+		if e.KeyID != keyID || e.Role != sign.RoleOperator {
+			continue
+		}
+		if e.NotAfter != nil && !agora.Before(*e.NotAfter) {
+			return false, nil
+		}
+		return true, nil
+	}
+	return false, nil
 }

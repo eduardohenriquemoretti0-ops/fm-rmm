@@ -101,6 +101,17 @@ func (c *Console) criarAcao(w http.ResponseWriter, r *http.Request) {
 		c.recusaAcao(w, op.ID, http.StatusUnauthorized, "assinatura_invalida", map[string]any{"key_id": truncaAud(req.KeyID)})
 		return
 	}
+	// 1b. revogação efetiva: a chave precisa estar na lista PUBLICADA (a que o
+	// agente confia), não só ativa no banco. Senão o agente descartaria a ação.
+	publicada, err := c.st.OperadorNaListaPublicada(req.KeyID, c.agora())
+	if err != nil {
+		c.recusaAcao(w, op.ID, http.StatusInternalServerError, "lista_indisponivel", nil)
+		return
+	}
+	if !publicada {
+		c.recusaAcao(w, op.ID, http.StatusForbidden, "operador_nao_publicado", map[string]any{"key_id": truncaAud(req.KeyID)})
+		return
+	}
 	// 2. assinatura sobre os bytes exatos
 	if len(req.Sig) != ed25519.SignatureSize || !ed25519.Verify(pub, req.Payload, req.Sig) {
 		c.recusaAcao(w, op.ID, http.StatusUnauthorized, "assinatura_invalida", map[string]any{"key_id": req.KeyID})

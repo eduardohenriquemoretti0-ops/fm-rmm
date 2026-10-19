@@ -168,3 +168,49 @@ func TestListenerConsoleExigeCertDeCliente(t *testing.T) {
 	}
 	resp.Body.Close()
 }
+
+// L1: diretório sem index.html => 404 (sem listagem); arquivo => 200.
+// L2: a 404 de estático também sai com Cache-Control: no-store.
+func TestEstaticosSemListagemDeDiretorioENoStoreNo404(t *testing.T) {
+	a := novoAmbiente(t)
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>spa</html>"), 0o600)
+	_ = os.MkdirAll(filepath.Join(dir, "assets"), 0o700)
+	_ = os.WriteFile(filepath.Join(dir, "assets", "segredo-listado.js"), []byte("x"), 0o600)
+	_ = os.MkdirAll(filepath.Join(dir, "comindex"), 0o700)
+	_ = os.WriteFile(filepath.Join(dir, "comindex", "index.html"), []byte("sub"), 0o600)
+	a.c.ServirEstaticos(dir)
+	h := a.c.Roteador()
+	get := func(p string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		return rec
+	}
+	for _, p := range []string{"/assets/", "/assets"} {
+		rec := get(p)
+		if strings.Contains(rec.Body.String(), "segredo-listado") {
+			t.Fatalf("%s listou o diretório: %s", p, rec.Body.String())
+		}
+		if p == "/assets/" && rec.Code != http.StatusNotFound {
+			t.Errorf("%s = %d, quer 404", p, rec.Code)
+		}
+	}
+	if rec := get("/assets/segredo-listado.js"); rec.Code != 200 {
+		t.Errorf("arquivo regular = %d, quer 200", rec.Code)
+	}
+	if rec := get("/comindex/"); rec.Code != 200 || !strings.Contains(rec.Body.String(), "sub") {
+		t.Errorf("diretório com index.html = %d, quer 200", rec.Code)
+	}
+	for _, p := range []string{"/assets/", "/nao-existe.js", "/api/qualquer"} {
+		rec := get(p)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s = %d, quer 404", p, rec.Code)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s: Cache-Control = %q, quer no-store", p, got)
+		}
+		if rec.Header().Get("Content-Security-Policy") == "" || rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s: faltam headers de segurança", p)
+		}
+	}
+}

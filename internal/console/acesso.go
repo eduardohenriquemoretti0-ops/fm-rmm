@@ -156,6 +156,15 @@ func (c *Console) comSessao(next http.Handler) http.Handler {
 		if err != nil {
 			// inclui ErrClienteDiferente: token válido, mas de outro cliente.
 			// Não revoga (quem paga é só quem apresentou), só limpa o cookie.
+			if errors.Is(err, ErrClienteDiferente) {
+				// cookie válido apresentado com OUTRO cert: sinal de roubo de
+				// token. Audita o operador do cert apresentado e o thumbprint
+				// (público); o token NUNCA entra no evento.
+				_ = c.st.Audit("console.sessao.cliente_diferente", op.ID, map[string]any{
+					"thumbprint_apresentado": truncaAud(thumb),
+					"rota":                   truncaAud(r.URL.Path),
+				})
+			}
 			limpaCookieSessao(w)
 			negado(w)
 			return

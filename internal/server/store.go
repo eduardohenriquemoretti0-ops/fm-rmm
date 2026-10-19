@@ -17,6 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/audit"
+	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/proto"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/sign"
 )
 
@@ -482,6 +483,22 @@ func scanJob(sc interface{ Scan(...any) error }) (Job, error) {
 	return j, err
 }
 
+// jobStaleApos: um job 'delivered' sem resultado vira 'stale' depois de
+// expires_at + ClockSkew (o agente ainda pode executar dentro da tolerância de
+// relógio; passada ela, o resultado não será mais aceito).
+const jobStaleApos = proto.ClockSkew
+
+// MarcarJobsStale converte jobs 'delivered' sem resultado e vencidos em 'stale'
+// (o servidor não deixa 'delivered' eterno). Devolve quantos mudaram.
+func (s *Store) MarcarJobsStale(agora time.Time) (int64, error) {
+	r, err := s.db.Exec(`UPDATE jobs SET status='stale', finished_at=? WHERE status='delivered' AND finished_at=0 AND expires_at + ? <= ?`,
+		agora.Unix(), int64(jobStaleApos/time.Second), agora.Unix())
+	if err != nil {
+		return 0, err
+	}
+	return r.RowsAffected()
+}
+
 // TakeQueued marca como entregues e devolve os jobs na fila do agente.
 // Jobs vencidos viram 'expired' e não são entregues.
 func (s *Store) TakeQueued(ctx context.Context, agentID string) ([]Job, error) {
@@ -491,6 +508,10 @@ func (s *Store) TakeQueued(ctx context.Context, agentID string) ([]Job, error) {
 	}
 	defer tx.Rollback()
 	now := time.Now().Unix()
+	if _, err := tx.Exec(`UPDATE jobs SET status='stale', finished_at=? WHERE status='delivered' AND finished_at=0 AND expires_at + ? <= ?`,
+		now, int64(jobStaleApos/time.Second), now); err != nil {
+		return nil, err
+	}
 	if _, err := tx.Exec(`UPDATE jobs SET status='expired' WHERE agent_id=? AND status='queued' AND expires_at <= ?`, agentID, now); err != nil {
 		return nil, err
 	}
@@ -517,6 +538,9 @@ func (s *Store) TakeQueued(ctx context.Context, agentID string) ([]Job, error) {
 }
 
 func (s *Store) Job(id string) (Job, error) {
+	if _, err := s.MarcarJobsStale(time.Now()); err != nil {
+		return Job{}, err
+	}
 	j, err := scanJob(s.db.QueryRow(`SELECT `+jobCols+` FROM jobs WHERE id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return j, ErrNotFound
@@ -525,6 +549,9 @@ func (s *Store) Job(id string) (Job, error) {
 }
 
 func (s *Store) Jobs(agentID string, limit int) ([]Job, error) {
+	if _, err := s.MarcarJobsStale(time.Now()); err != nil {
+		return nil, err
+	}
 	q, args := `SELECT `+jobCols+` FROM jobs ORDER BY created_at DESC LIMIT ?`, []any{limit}
 	if agentID != "" {
 		q, args = `SELECT `+jobCols+` FROM jobs WHERE agent_id=? ORDER BY created_at DESC LIMIT ?`, []any{agentID, limit}

@@ -105,6 +105,35 @@ func (o *opLab) post(corpo any) *httptest.ResponseRecorder {
 	return rec
 }
 
+func (o *opLab) assinaJob(id string) map[string]any {
+	now := time.Now().UTC().Truncate(time.Second)
+	sj, err := sign.SignJob(o.priv, proto.JobPayload{V: proto.Version, JobID: id, AgentID: o.agent, Action: "info",
+		IssuedAt: now, ExpiresAt: now.Add(time.Hour), Issuer: "op-joao"})
+	if err != nil {
+		o.t.Fatal(err)
+	}
+	return map[string]any{"tipo": "job", "payload": []byte(sj.Payload), "sig": sj.Sig, "key_id": sj.KeyID}
+}
+
+func (o *opLab) assinaGrant(id string) map[string]any {
+	now := time.Now().UTC().Truncate(time.Second)
+	sg, err := sign.SignGrant(o.priv, proto.RemoteGrant{V: proto.Version, SessionID: id, AgentID: o.agent, Technician: "joao",
+		Mode: proto.ModeView, Engine: proto.EngineScreenshot, RelayURL: relayAcoes, RelayToken: strings.Repeat("t", 40),
+		IssuedAt: now, ExpiresAt: now.Add(10 * time.Minute), Issuer: "op-joao"})
+	if err != nil {
+		o.t.Fatal(err)
+	}
+	return map[string]any{"tipo": "grant", "payload": sg.Payload, "sig": sg.Sig, "key_id": sg.KeyID}
+}
+
+func (o *opLab) recusaNaoPublicado(tipo string, corpo map[string]any) {
+	o.t.Helper()
+	rec := o.post(corpo)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "operador_nao_publicado") {
+		o.t.Fatalf("%s de operador não publicado: %d %s", tipo, rec.Code, rec.Body.String())
+	}
+}
+
 func (o *opLab) enviaJob(id string) {
 	o.t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
@@ -144,34 +173,21 @@ func TestAcoesDoOperadorAteOAgente(t *testing.T) {
 	raiz := l.admin
 	raizPub := raiz.Public().(ed25519.PublicKey)
 
-	// 1. operador NÃO publicado: o servidor enfileira e entrega (operador apto),
-	// mas o AGENTE recusa (a chave não está no trust-set) e nada executa.
-	o.enviaJob("job-op-antes0001")
+	// 1. operador NÃO publicado: desde o N2 o SERVIDOR já recusa (403
+	// operador_nao_publicado) e nada é enfileirado; o agente nunca vê a ação.
+	o.recusaNaoPublicado("job", o.assinaJob("job-op-antes0001"))
+	o.recusaNaoPublicado("grant", o.assinaGrant("ses-op-antes0002"))
 	if err := ag.CheckinOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if len(l.ran) != 0 {
 		t.Fatalf("agente executou ação de operador NÃO publicado: %v", l.ran)
 	}
-	jb, err := l.st.Job("job-op-antes0001")
-	if err != nil {
-		t.Fatal(err)
+	if _, err := l.st.Job("job-op-antes0001"); err == nil {
+		t.Fatal("servidor enfileirou job de operador não publicado")
 	}
-	if jb.Status == "queued" {
-		t.Fatal("servidor barrou o job do operador apto (pendência do T5b): deveria entregar")
-	}
-	t.Logf("antes da lista: job entregue pelo servidor (status=%s); agente não executou nada", jb.Status)
-
-	// grant de operador não publicado: verificação do agente falha
-	o.enviaGrant("ses-op-antes0002")
-	gs, err := l.st.TakeSessions(agentID)
-	if err != nil || len(gs) == 0 {
-		t.Fatalf("TakeSessions: %v %d", err, len(gs))
-	}
-	for _, sg := range gs {
-		if _, err := sign.VerifyGrantAny(ag.confianca(), sg, agentID, ag.now()); err == nil {
-			t.Fatal("agente aceitou grant de operador não publicado")
-		}
+	if gs, _ := l.st.TakeSessions(agentID); len(gs) != 0 {
+		t.Fatalf("servidor enfileirou grant de operador não publicado: %d", len(gs))
 	}
 
 	// 2. admin publica a lista com o operador (offline, com a raiz)
@@ -195,14 +211,14 @@ func TestAcoesDoOperadorAteOAgente(t *testing.T) {
 	if len(l.ran) != 1 || l.ran[0] != "info" {
 		t.Fatalf("agente não executou o job do operador publicado: ran=%v", l.ran)
 	}
-	jb, _ = l.st.Job("job-op-depois001")
+	jb, _ := l.st.Job("job-op-depois001")
 	if jb.Status != "done" {
 		t.Fatalf("job do operador publicado: status=%s result=%s", jb.Status, jb.Result)
 	}
 
 	// 4. grant do operador publicado: o agente ACEITA (VerifyGrantAny no trust-set)
 	o.enviaGrant("ses-op-depois001")
-	gs, err = l.st.TakeSessions(agentID)
+	gs, err := l.st.TakeSessions(agentID)
 	if err != nil || len(gs) != 1 {
 		t.Fatalf("TakeSessions: %v %d", err, len(gs))
 	}

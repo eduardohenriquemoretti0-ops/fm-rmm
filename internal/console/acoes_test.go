@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/proto"
+	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/server"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/sign"
 )
 
@@ -41,12 +42,42 @@ func novoCenarioAcao(t *testing.T) *cenarioAcao {
 	if err := c.a.f.st.SetOperatorSigningPub("op-a", sign.EncodePub(pub)); err != nil {
 		t.Fatal(err)
 	}
+	publicaListaTeste(t, c.a.f.st, sign.EncodePub(pub))
 	tok, csrf, err := c.a.f.sm.New("op-a", CertThumbprint(c.certA))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &cenarioAcao{cenario: c, priv: priv, pub: pub, tok: tok, csrf: csrf,
 		ck: SessionCookie(NomeCookieSessao, tok, time.Minute)}
+}
+
+// publicaListaTeste publica (com uma raiz descartável) a lista de signers com
+// as operadoras dadas; versão = atual+1.
+func publicaListaTeste(t *testing.T, st *server.Store, pubs ...string) {
+	t.Helper()
+	raizPub, raiz, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ops []sign.SignerEntry
+	for _, p := range pubs {
+		pk, err := sign.DecodePub(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ops = append(ops, sign.SignerEntry{KeyID: sign.KeyID(pk), Pub: p, Role: sign.RoleOperator})
+	}
+	exp, err := st.ExportarLista()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, sig, _, err := server.ConstruirLista(raiz, exp.VersaoAtual, ops, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.PublicarLista(st, raizPub, raw, sig, "teste"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (c *cenarioAcao) stepUp(t *testing.T) {
@@ -465,4 +496,49 @@ func TestVetorCanonicoDocumentado(t *testing.T) {
 	if !decodificaCanonico([]byte(job), &p) {
 		t.Fatal("o job documentado não passa na checagem de forma canônica")
 	}
+}
+
+// N2: operador ativo no banco, mas fora da lista PUBLICADA, é recusado.
+func TestAcaoOperadorForaDaListaPublicadaRecusado(t *testing.T) {
+	c := novoCenarioAcao(t)
+	c.stepUp(t)
+	// nova versão da lista SEM a chave do op-a (admin retirou)
+	publicaListaTeste(t, c.a.f.st)
+	rec := c.envia(t, "/api/acoes", c.corpoJob(t, c.job("job-n2aaaa01", c.ag1)))
+	c.exigeCodigo(t, rec, http.StatusForbidden, "operador_nao_publicado")
+	rec = c.envia(t, "/api/acoes", c.corpoGrant(t, c.grant("ses-n2aaaa01", c.ag1)))
+	c.exigeCodigo(t, rec, http.StatusForbidden, "operador_nao_publicado")
+	if j, s := c.fila(t, c.ag1); j != 0 || s != 0 {
+		t.Fatalf("nada deveria ser enfileirado: jobs=%d sessões=%d", j, s)
+	}
+	// a recusa é auditada
+	ents, err := c.a.f.st.AuditEntries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	achou := false
+	for _, e := range ents {
+		if e.Event == "console.acao.recusada" && strings.Contains(string(e.Data), "operador_nao_publicado") {
+			achou = true
+		}
+	}
+	if !achou {
+		t.Error("recusa operador_nao_publicado não auditada")
+	}
+}
+
+// Sem nenhuma lista publicada também recusa (fail-closed).
+func TestAcaoSemListaPublicadaRecusado(t *testing.T) {
+	c := novoCenario(t)
+	c.a.c.agora = func() time.Time { return c.a.f.agora }
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	if err := c.a.f.st.SetOperatorSigningPub("op-a", sign.EncodePub(pub)); err != nil {
+		t.Fatal(err)
+	}
+	tok, csrf, _ := c.a.f.sm.New("op-a", CertThumbprint(c.certA))
+	_ = c.a.f.sm.MarcarStepUp(tok, CertThumbprint(c.certA), time.Minute)
+	ca := &cenarioAcao{cenario: c, priv: priv, pub: pub, tok: tok, csrf: csrf,
+		ck: SessionCookie(NomeCookieSessao, tok, time.Minute)}
+	rec := ca.envia(t, "/api/acoes", ca.corpoJob(t, ca.job("job-n2bbbb01", c.ag1)))
+	ca.exigeCodigo(t, rec, http.StatusForbidden, "operador_nao_publicado")
 }

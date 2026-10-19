@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path"
 	"strings"
 )
 
@@ -63,17 +65,69 @@ func (c *Console) Roteador() http.Handler {
 func (c *Console) ServirEstaticos(dir string) { c.estaticos = dir }
 
 // estaticosHandler serve os arquivos do SPA. Nada sob /api/ chega aqui como
-// arquivo (404 JSON-neutro); http.Dir recusa traversal. O index e os demais
-// arquivos herdam Cache-Control: no-store do SecurityHeaders.
+// arquivo (404 JSON-neutro); http.Dir recusa traversal. Só arquivos REGULARES
+// são servidos: diretório sem index.html vira 404 (sem listagem). Toda 404
+// daqui sai com Cache-Control: no-store (o FileServer apaga/reescreve headers
+// de cache em erro). Os demais headers vêm do SecurityHeaders.
 func estaticosHandler(dir string) http.Handler {
-	fs := http.FileServer(http.Dir(dir))
+	fs := http.FileServer(noDirFS{http.Dir(dir)})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
 			http.NotFound(w, r)
 			return
 		}
-		fs.ServeHTTP(w, r)
+		fs.ServeHTTP(&noStore404{ResponseWriter: w}, r)
 	})
+}
+
+// noDirFS recusa abrir diretório que não tenha index.html: o FileServer só
+// lista diretório quando consegue abri-lo, então um erro aqui vira 404.
+type noDirFS struct{ fs http.FileSystem }
+
+func (n noDirFS) Open(name string) (http.File, error) {
+	f, err := n.fs.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if st.IsDir() {
+		idx, err := n.fs.Open(path.Join(name, "index.html"))
+		if err != nil {
+			f.Close()
+			return nil, os.ErrNotExist
+		}
+		idx.Close()
+	}
+	return f, nil
+}
+
+// noStore404 reaplica Cache-Control: no-store quando o FileServer responde erro
+// (ele troca os headers de cache nas respostas de erro).
+type noStore404 struct {
+	http.ResponseWriter
+	feito bool
+}
+
+func (w *noStore404) WriteHeader(code int) {
+	if !w.feito {
+		w.feito = true
+		if code >= 400 {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *noStore404) Write(b []byte) (int, error) {
+	if !w.feito {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
 }
 
 func (c *Console) stepUpInicio(w http.ResponseWriter, r *http.Request) {

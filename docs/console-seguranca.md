@@ -145,6 +145,25 @@ de admin (raiz) continua **100% offline**.
 3. O agente recebe e **verifica contra o trust-set** (raiz + operadores da lista),
    exatamente como já verifica hoje — anti-replay `seen.json`, `expira_em`, agentID.
 
+### Decisões de projeto do hardening (pentest interno, observações de baixa severidade)
+
+- **Tolerância de relógio (N3, por design):** uma ação cujo `expires_at` venceu há
+  até 5 minutos (`proto.ClockSkew`) AINDA é aceita, tanto pelo console quanto pelo
+  agente. A tolerância existe para absorver deriva de relógio entre navegador,
+  servidor e agente; o teto de validade (TTL máximo) e o nonce de uso único limitam
+  o ganho de um atacante. Não é bug: não reduza sem medir a deriva real da frota.
+- **Revogação efetiva (N2):** `/api/acoes` só enfileira se a `signing_pub` do
+  operador estiver na lista de signers PUBLICADA em vigor (papel operator, dentro
+  de `not_after`). Operador ativo no banco mas retirado da lista recebe 403
+  `operador_nao_publicado` (auditado); sem lista publicada, recusa (fail-closed).
+- **Job órfão (N1):** job `delivered` sem resultado vira `stale` depois de
+  `expires_at` + `ClockSkew` (varredura na consulta e na entrega). Resultado tardio
+  de job `stale` é rejeitado.
+- **Sessão com cert diferente (L3):** cookie válido apresentado com outro cert
+  gera o evento de auditoria `console.sessao.cliente_diferente` (sem o token).
+- **Estáticos (L1/L2):** só arquivos regulares; diretório sem `index.html` => 404;
+  404 de estático sai com `Cache-Control: no-store`.
+
 ### Decomposição de tarefas (adendo ao handoff)
 - **T5a (dev-golang):** agente deixa de confiar em 1 pub e passa a um trust-set
   ancorado na raiz; parse+verificação da lista de signers assinada + anti-downgrade

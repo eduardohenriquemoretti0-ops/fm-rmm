@@ -423,3 +423,47 @@ func cookieLimpo(rec *httptest.ResponseRecorder) bool {
 	}
 	return false
 }
+
+// L3: cookie válido com cert de outro cliente -> evento de auditoria, sem token.
+func TestSessaoClienteDiferenteAudita(t *testing.T) {
+	a := novoAmbiente(t)
+	certA, _ := certDe(t, a.ca, a.caK, "op-a")
+	certB, _ := certDe(t, a.ca, a.caK, "op-b")
+	a.operadorAtivoComCert(t, "op-a", certA)
+	a.operadorAtivoComCert(t, "op-b", certB)
+	raw, _, err := a.f.sm.New("op-a", CertThumbprint(certA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := a.c.protegido(a.c.sessaoAtual)
+	req := reqTLS(http.MethodGet, "/api/sessao", nil, certB)
+	req.AddCookie(SessionCookie(NomeCookieSessao, raw, time.Minute))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, quer 401", rec.Code)
+	}
+	ents, err := a.f.st.AuditEntries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range ents {
+		if e.Event != "console.sessao.cliente_diferente" {
+			continue
+		}
+		n++
+		if e.Actor != "op-b" {
+			t.Errorf("actor = %q, quer op-b (quem apresentou)", e.Actor)
+		}
+		if strings.Contains(string(e.Data), raw) {
+			t.Error("o token vazou para o evento de auditoria")
+		}
+		if !strings.Contains(string(e.Data), CertThumbprint(certB)[:8]) {
+			t.Errorf("thumbprint apresentado ausente: %s", e.Data)
+		}
+	}
+	if n != 1 {
+		t.Fatalf("eventos cliente_diferente = %d, quer 1", n)
+	}
+}
