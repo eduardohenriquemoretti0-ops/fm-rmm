@@ -99,11 +99,18 @@ var (
 	ErrMalformed = errors.New("job malformado")
 )
 
-// VerifyJob confere assinatura, versão, destino e janela de validade.
-// NÃO confere replay nem catálogo: isso é do agente (estado local).
+// VerifyJob confere assinatura contra UMA chave e o restante das regras.
+// Equivale a VerifyJobAny(SingleKey(pub), ...).
 func VerifyJob(pub ed25519.PublicKey, sj proto.SignedJob, agentID string, now time.Time) (proto.JobPayload, error) {
+	return VerifyJobAny(SingleKey(pub), sj, agentID, now)
+}
+
+// VerifyJobAny confere assinatura contra QUALQUER chave usável do trust-set,
+// versão, destino e janela de validade. NÃO confere replay nem catálogo: isso
+// é do agente (estado local).
+func VerifyJobAny(ts TrustSet, sj proto.SignedJob, agentID string, now time.Time) (proto.JobPayload, error) {
 	var p proto.JobPayload
-	if len(sj.Sig) != ed25519.SignatureSize || !ed25519.Verify(pub, sj.Payload, sj.Sig) {
+	if !ts.assina(sj.Payload, sj.Sig, now) {
 		return p, ErrSignature
 	}
 	if err := json.Unmarshal(sj.Payload, &p); err != nil {

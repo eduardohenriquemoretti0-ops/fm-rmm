@@ -49,7 +49,7 @@ func (ag *Agent) handleGrant(ctx context.Context, sg proto.SignedGrant) proto.Se
 		ag.Log.Warn("sessão recusada", "sessao", id, "motivo", why)
 		return proto.SessionEvent{SessionID: id, Event: "recusada", Detail: why, At: now}
 	}
-	g, err := sign.VerifyGrant(ag.signer, sg, ag.state.AgentID, now)
+	g, err := sign.VerifyGrantAny(ag.confianca(), sg, ag.state.AgentID, now)
 	if err != nil {
 		if errors.Is(err, sign.ErrSignature) || errors.Is(err, sign.ErrMalformed) {
 			ag.Log.Warn("concessão de sessão descartada: " + err.Error())

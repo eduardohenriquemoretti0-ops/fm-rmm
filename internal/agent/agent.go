@@ -61,7 +61,8 @@ type Agent struct {
 	Dir      string
 	Log      *slog.Logger
 	bundle   proto.Bundle
-	signer   ed25519.PublicKey
+	signer   ed25519.PublicKey // chave raiz (bundle): âncora do trust-set
+	trust    *trustStore       // raiz + signers da lista assinada (T5a)
 	caPool   *x509.CertPool
 	state    State
 	seen     *seenStore
@@ -123,6 +124,9 @@ func New(dir string, log *slog.Logger) (*Agent, error) {
 		return nil, fmt.Errorf("estado: %w", err)
 	}
 	if ag.seen, err = openSeen(filepath.Join(dir, fileSeen)); err != nil {
+		return nil, err
+	}
+	if ag.trust, err = openTrust(filepath.Join(dir, fileTrust), ag.signer, time.Now(), log); err != nil {
 		return nil, err
 	}
 	ag.enableRustDesk()
@@ -305,6 +309,9 @@ func (ag *Agent) CheckinOnce(ctx context.Context) error {
 	if err := ag.post(ctx, c, "/v1/checkin", proto.CheckinRequest{Heartbeat: ag.heartbeat()}, &resp); err != nil {
 		return err
 	}
+	// T5b: quando o transporte da lista de signers existir, a resposta do check-in
+	// a entrega aqui via ag.IngerirListaSigners(raw, assinatura). Ainda não há
+	// campo no protocolo: sem lista, o trust-set fica só com a raiz.
 	if resp.IntervalSec >= 10 && resp.IntervalSec <= 3600 {
 		ag.interval = time.Duration(resp.IntervalSec) * time.Second
 	}
@@ -337,7 +344,7 @@ func (ag *Agent) handleJob(ctx context.Context, sj proto.SignedJob) proto.Result
 		ag.Log.Warn("job recusado", "job", id, "motivo", why)
 		return proto.Result{JobID: id, Status: "recusado", ExitCode: -1, Error: why, StartedAt: now, FinishedAt: now}
 	}
-	p, err := sign.VerifyJob(ag.signer, sj, ag.state.AgentID, now)
+	p, err := sign.VerifyJobAny(ag.confianca(), sj, ag.state.AgentID, now)
 	if err != nil {
 		// assinatura inválida: o conteúdo não é confiável nem para reportar o ID
 		if errors.Is(err, sign.ErrSignature) || errors.Is(err, sign.ErrMalformed) {

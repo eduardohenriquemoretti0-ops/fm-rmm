@@ -28,11 +28,18 @@ func SignGrant(priv ed25519.PrivateKey, g proto.RemoteGrant) (proto.SignedGrant,
 	return proto.SignedGrant{Payload: raw, Sig: ed25519.Sign(priv, raw), KeyID: KeyID(pub)}, nil
 }
 
-// VerifyGrant confere assinatura, modo, destino, relay e janela de validade.
-// Rejeita qualquer modo que não seja view/control (não há modo oculto).
+// VerifyGrant confere a concessão contra UMA chave. Equivale a
+// VerifyGrantAny(SingleKey(pub), ...).
 func VerifyGrant(pub ed25519.PublicKey, sg proto.SignedGrant, agentID string, now time.Time) (proto.RemoteGrant, error) {
+	return VerifyGrantAny(SingleKey(pub), sg, agentID, now)
+}
+
+// VerifyGrantAny confere a concessão contra QUALQUER chave usável do trust-set,
+// modo, destino, relay e janela de validade. Rejeita qualquer modo que não seja
+// view/control (não há modo oculto).
+func VerifyGrantAny(ts TrustSet, sg proto.SignedGrant, agentID string, now time.Time) (proto.RemoteGrant, error) {
 	var g proto.RemoteGrant
-	if len(sg.Sig) != ed25519.SignatureSize || !ed25519.Verify(pub, sg.Payload, sg.Sig) {
+	if !ts.assina(sg.Payload, sg.Sig, now) {
 		return g, ErrSignature
 	}
 	if err := json.Unmarshal(sg.Payload, &g); err != nil {
