@@ -1,5 +1,13 @@
 # FM-RMM
 
+![Go](https://img.shields.io/badge/Go-1.x-00ADD8?logo=go&logoColor=white)
+![Status: testado em VM real](https://img.shields.io/badge/status-testado%20em%20VM%20real-success)
+![Plataformas](https://img.shields.io/badge/plataformas-Windows%20%7C%20Linux%20%7C%20macOS-informational)
+![Testes: go test -race](https://img.shields.io/badge/testes-go%20test%20--race-brightgreen)
+![Segurança: mTLS + Ed25519](https://img.shields.io/badge/seguran%C3%A7a-mTLS%20%2B%20Ed25519-critical)
+
+**RMM e acesso remoto autorizado, self-hosted, escrito em Go — com segurança de nível de infraestrutura no centro do projeto, não como remendo.** Cada agente usa **mTLS** com CA própria revogável; jobs e sessões são **assinados em Ed25519 por uma chave de admin que nunca fica no servidor**, com anti-replay persistente, catálogo de ações fechado, RBAC, inscrição por token + aprovação e **auditoria append-only encadeada por hash**. O indicador de sessão é **sempre visível e fail-closed**: por decisão ética e de LGPD, o projeto **recusou implementar captura oculta (RAT)**. Validado em VM real, com build nos três sistemas operacionais e `go test -race`; dois binários (servidor + agente) e SQLite sem cgo. Inclui RustDesk self-hosted endurecido no Windows.
+
 Canal de controle e **acesso remoto autorizado** self-hosted para um parque de
 máquinas Windows, Linux e macOS sob gestão de TI. Servidor e agente próprios,
 em Go, com controles mais rígidos que os de um RMM genérico.
