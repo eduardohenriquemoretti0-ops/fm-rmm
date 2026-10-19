@@ -144,6 +144,22 @@ func removeService() error {
 	return err
 }
 
+func indicatorHelperPath() string {
+	return filepath.Join(filepath.Dir(BinaryPath()), "fmrmm-indicator.exe")
+}
+
+// installHelper copia o fmrmm-indicator.exe que veio junto do instalador para o
+// lado do agente. Obrigatório no Windows: o serviço o lança na sessão do usuário.
+func installHelper(srcExe string) error {
+	src := filepath.Join(filepath.Dir(srcExe), "fmrmm-indicator.exe")
+	if _, err := os.Stat(src); err != nil {
+		return fmt.Errorf("fmrmm-indicator.exe precisa estar junto do instalador (%s): %w", src, err)
+	}
+	return copyBinary(src, indicatorHelperPath())
+}
+
+func removeHelper() { _ = os.Remove(indicatorHelperPath()) }
+
 func removeBinary(bin string) {
 	_ = os.Remove(bin)
 	_ = os.Remove(filepath.Dir(bin)) // só some se estiver vazia

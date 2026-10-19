@@ -55,6 +55,9 @@ func NewRustDeskMedia(log *slog.Logger, host, key string) SessionMedia {
 
 var rdIDClean = regexp.MustCompile(`[^a-z0-9]+`)
 
+// rdSecretOK aceita só o alfabeto hex/base64url da senha de uso único.
+var rdSecretOK = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
 // deterministicID deriva um ID estável por máquina (sabemos sem --get-id).
 func deterministicID() string {
 	h, _ := os.Hostname()
@@ -89,6 +92,12 @@ func (m *rustdeskMedia) Serve(ctx context.Context, conn net.Conn, mode, secret s
 	if secret == "" {
 		return errors.New("rustdesk: sessão sem senha de uso único")
 	}
+	// A senha vai para uma string literal de TOML (sem escape). Exigimos alfabeto
+	// hex/base64url — é o que randHex/randSecret produzem — para que nenhum
+	// caractere problemático chegue ao arquivo de config.
+	if !rdSecretOK.MatchString(secret) {
+		return errors.New("rustdesk: senha de sessão com caractere inválido (esperado hex/base64url)")
+	}
 	if m.host == "" || m.key == "" {
 		return errors.New("rustdesk: bundle sem host/chave do servidor (rustdesk_host/rustdesk_key)")
 	}
@@ -102,6 +111,11 @@ func (m *rustdeskMedia) Serve(ctx context.Context, conn net.Conn, mode, secret s
 	// 1) config principal: nosso ID + senha de uso único (remove enc_id p/ o ID valer)
 	if err := editTOML(cfg1, map[string]string{"id": id, "password": secret}, []string{"enc_id"}); err != nil {
 		return fmt.Errorf("rustdesk config id/senha: %w", err)
+	}
+	// senha de uso único em TEXTO no arquivo: tranca já, antes do restart, para
+	// proteger essa janela (o restart do RustDesk depois cifra a senha).
+	if err := m.lockConfigs(ctx, cfg1, cfg2); err != nil {
+		return fmt.Errorf("rustdesk tranca config (pré-restart): %w", err)
 	}
 	// 2) config de opções: pinning do nosso servidor + chave + permissões por modo
 	enableKbd := "N"
@@ -120,12 +134,17 @@ func (m *rustdeskMedia) Serve(ctx context.Context, conn net.Conn, mode, secret s
 	if err := m.restartService(ctx); err != nil {
 		return fmt.Errorf("rustdesk restart: %w", err)
 	}
+	// o restart REESCREVE os .toml e recria a ACL herdada: reaplica a restrição.
+	if err := m.lockConfigs(ctx, cfg1, cfg2); err != nil {
+		return fmt.Errorf("rustdesk tranca config (pós-restart): %w", err)
+	}
 	// limpa a senha no fim: sem acesso desatendido depois da sessão
 	defer func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_ = editTOML(cfg1, map[string]string{"password": ""}, nil)
 		_ = m.restartService(cctx)
+		_ = m.lockConfigs(cctx, cfg1, cfg2) // o restart final também reescreve: trava de novo
 	}()
 
 	// 3) informa o console o ID; os pixels vão pelo hbbr do RustDesk
@@ -139,110 +158,32 @@ func (m *rustdeskMedia) Serve(ctx context.Context, conn net.Conn, mode, secret s
 	return ctx.Err()
 }
 
-// editTOML regrava chaves de topo (key = 'valor') e remove as de `drop`.
-func editTOML(path string, set map[string]string, drop []string) error {
-	b, err := os.ReadFile(path)
+// restrictACL tira a herança e deixa só SYSTEM, Administradores e LOCAL SERVICE
+// com o arquivo. LOCAL SERVICE é obrigatório: o RustDesk roda nessa conta e
+// precisa ler a própria config — tirá-la quebraria a sessão. A ACL default já
+// nega usuário comum; o ganho aqui é remover herança (sem ACE amplo herdado) e
+// travar a janela em que a senha de uso único está em texto. O modo 0o600 do Go
+// não vira ACL no Windows, por isso o icacls.
+func (m *rustdeskMedia) restrictACL(ctx context.Context, path string) error {
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, "icacls", path,
+		"/inheritance:r",
+		"/grant:r", "*S-1-5-18:F", // SYSTEM
+		"/grant:r", "*S-1-5-32-544:F", // Administradores (BUILTIN\Administrators)
+		"/grant:r", "*S-1-5-19:F", // LOCAL SERVICE (conta do serviço RustDesk)
+	).CombinedOutput()
 	if err != nil {
+		return fmt.Errorf("icacls %s: %v: %s", path, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// lockConfigs reaplica a ACL restrita nos dois .toml. Tem de rodar DEPOIS de cada
+// restart do RustDesk: o restart reescreve os arquivos e recria a ACL herdada.
+func (m *rustdeskMedia) lockConfigs(ctx context.Context, cfg1, cfg2 string) error {
+	if err := m.restrictACL(ctx, cfg1); err != nil {
 		return err
 	}
-	lines := strings.Split(string(b), "\n")
-	var out []string
-	seen := map[string]bool{}
-	skip := func(k string) bool {
-		for _, d := range drop {
-			if k == d {
-				return true
-			}
-		}
-		return false
-	}
-	for _, ln := range lines {
-		t := strings.TrimSpace(ln)
-		if i := strings.Index(t, "="); i > 0 && !strings.HasPrefix(t, "[") {
-			k := strings.TrimSpace(t[:i])
-			if skip(k) {
-				continue
-			}
-			if v, ok := set[k]; ok {
-				out = append(out, fmt.Sprintf("%s = '%s'", k, tomlEsc(v)))
-				seen[k] = true
-				continue
-			}
-		}
-		out = append(out, ln)
-	}
-	// chaves novas vão no topo (antes de qualquer [secao])
-	var head []string
-	for k, v := range set {
-		if !seen[k] {
-			head = append(head, fmt.Sprintf("%s = '%s'", k, tomlEsc(v)))
-		}
-	}
-	final := append(head, out...)
-	return os.WriteFile(path, []byte(strings.Join(final, "\n")), 0o644)
+	return m.restrictACL(ctx, cfg2)
 }
-
-// editTOMLOptions grava chaves sob a seção [options].
-func editTOMLOptions(path string, set map[string]string) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	lines := strings.Split(string(b), "\n")
-	var out []string
-	inOpts := false
-	seen := map[string]bool{}
-	flush := func() {
-		for k, v := range set {
-			if !seen[k] {
-				out = append(out, fmt.Sprintf("%s = '%s'", k, tomlEsc(v)))
-				seen[k] = true
-			}
-		}
-	}
-	for _, ln := range lines {
-		t := strings.TrimSpace(ln)
-		if strings.HasPrefix(t, "[") {
-			if inOpts {
-				flush() // fim da [options]: grava as que faltaram
-			}
-			inOpts = t == "[options]"
-			out = append(out, ln)
-			continue
-		}
-		if inOpts {
-			if i := strings.Index(t, "="); i > 0 {
-				k := strings.TrimSpace(t[:i])
-				if v, ok := set[k]; ok {
-					out = append(out, fmt.Sprintf("%s = '%s'", k, tomlEsc(v)))
-					seen[k] = true
-					continue
-				}
-			}
-		}
-		out = append(out, ln)
-	}
-	if inOpts {
-		flush()
-	}
-	if !hasSection(lines, "[options]") {
-		out = append(out, "[options]")
-		for k, v := range set {
-			if !seen[k] {
-				out = append(out, fmt.Sprintf("%s = '%s'", k, tomlEsc(v)))
-			}
-		}
-	}
-	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644)
-}
-
-func hasSection(lines []string, sec string) bool {
-	for _, l := range lines {
-		if strings.TrimSpace(l) == sec {
-			return true
-		}
-	}
-	return false
-}
-
-func tomlEsc(s string) string { return strings.ReplaceAll(s, "'", "") }

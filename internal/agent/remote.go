@@ -35,9 +35,12 @@ type SessionMedia interface {
 }
 
 // Indicator é o indicador de sessão visível no endpoint. Show deve tornar a
-// sessão perceptível ao usuário; se falhar, a sessão NÃO começa.
+// sessão perceptível ao usuário; se falhar, a sessão NÃO começa. Só retorna sem
+// erro depois de CONFIRMAR que o aviso está visível (ack). O canal `lost`
+// emite/fecha quando o aviso deixa de estar comprovadamente visível (helper
+// morreu, sem heartbeat): o chamador DEVE encerrar a sessão na hora.
 type Indicator interface {
-	Show(sessionID, technician, mode string) (stop func(), err error)
+	Show(sessionID, technician, mode string) (stop func(), lost <-chan struct{}, err error)
 }
 
 func (ag *Agent) handleGrant(ctx context.Context, sg proto.SignedGrant) proto.SessionEvent {
@@ -59,7 +62,7 @@ func (ag *Agent) handleGrant(ctx context.Context, sg proto.SignedGrant) proto.Se
 		return refuse(g.SessionID, "mídia/indicador não configurados neste agente")
 	}
 	// indicador ANTES da mídia; sem ele, não há sessão
-	stop, err := ag.indicator.Show(g.SessionID, g.Technician, g.Mode)
+	stop, lost, err := ag.indicator.Show(g.SessionID, g.Technician, g.Mode)
 	if err != nil {
 		return refuse(g.SessionID, "indicador de sessão não pôde ser exibido: "+err.Error())
 	}
@@ -75,10 +78,25 @@ func (ag *Agent) handleGrant(ctx context.Context, sg proto.SignedGrant) proto.Se
 	defer conn.Close()
 	sctx, cancel := context.WithDeadline(ctx, g.ExpiresAt)
 	defer cancel()
+	// amarra a vida da sessão à do indicador: se o aviso cair, encerra a mídia
+	// na hora (sem janela de visualização sem aviso).
+	go func() {
+		select {
+		case <-sctx.Done():
+		case <-lost:
+			ag.Log.Warn("indicador de sessão caiu — encerrando sessão", "sessao", g.SessionID)
+			cancel()
+		}
+	}()
 	if err := media.Serve(sctx, conn, g.Mode, g.MediaSecret); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		ag.Log.Warn("sessão encerrou com erro", "sessao", g.SessionID, "erro", err)
 	}
-	return proto.SessionEvent{SessionID: g.SessionID, Event: "encerrada", At: ag.now()}
+	select {
+	case <-lost:
+		return proto.SessionEvent{SessionID: g.SessionID, Event: "encerrada", Detail: "indicador de sessão caiu (fail-closed)", At: ag.now()}
+	default:
+		return proto.SessionEvent{SessionID: g.SessionID, Event: "encerrada", At: ag.now()}
+	}
 }
 
 // dialRelay conecta ao relay (wss/https), usando o pinning da nossa CA, e faz

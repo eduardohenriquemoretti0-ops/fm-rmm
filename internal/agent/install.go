@@ -54,6 +54,11 @@ func Install(o InstallOptions) error {
 	if err := copyBinary(exe, BinaryPath()); err != nil {
 		return fmt.Errorf("copiar binário: %w", err)
 	}
+	// o helper de indicador (Windows) tem de viajar junto: sem ele o agente
+	// recusa toda sessão (fail-closed). Unix: no-op.
+	if err := installHelper(exe); err != nil {
+		return fmt.Errorf("instalar helper do indicador: %w", err)
+	}
 	if err := writeFileAtomic(filepath.Join(dir, fileBundle), raw); err != nil {
 		return err
 	}
@@ -80,6 +85,7 @@ func Uninstall(purge bool) error {
 	if err := removeService(); err != nil {
 		return fmt.Errorf("remover serviço: %w", err)
 	}
+	removeHelper()
 	removeBinary(BinaryPath())
 	if purge {
 		return os.RemoveAll(DataDir())

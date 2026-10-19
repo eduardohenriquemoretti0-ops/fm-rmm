@@ -28,16 +28,21 @@ type fakeIndicator struct {
 	mu          sync.Mutex
 	shown       bool
 	failForever bool
+	lost        chan struct{} // se != nil, é devolvido como canal de perda
 }
 
-func (f *fakeIndicator) Show(_, _, _ string) (func(), error) {
+func (f *fakeIndicator) Show(_, _, _ string) (func(), <-chan struct{}, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failForever {
-		return nil, io.ErrClosedPipe // simula endpoint sem sessão gráfica
+		return nil, nil, io.ErrClosedPipe // simula endpoint sem sessão gráfica
 	}
 	f.shown = true
-	return func() {}, nil
+	lost := f.lost
+	if lost == nil {
+		lost = make(chan struct{}) // nunca fecha: indicador saudável
+	}
+	return func() {}, lost, nil
 }
 
 type fakeMedia struct {
@@ -211,6 +216,55 @@ func TestSessaoSemIndicadorRecusa(t *testing.T) {
 		t.Fatal("recusa por falta de indicador não foi auditada")
 	}
 	_ = g
+}
+
+// blockingMedia fica na sessão até o contexto cair; sinaliza quando começou e
+// quando terminou, para o teste observar o teardown.
+type blockingMedia struct{ started, ended chan struct{} }
+
+func (m *blockingMedia) Serve(ctx context.Context, _ net.Conn, _, _ string) error {
+	close(m.started)
+	<-ctx.Done()
+	close(m.ended)
+	return ctx.Err()
+}
+
+// Se o indicador cair no meio da sessão, o agente encerra a mídia na hora
+// (1.3: vida da sessão amarrada à vida do indicador, fail-closed).
+func TestSessaoIndicadorCaiEncerra(t *testing.T) {
+	l := newLab(t)
+	rs := l.startRelay(t)
+	ctx := context.Background()
+	ag := l.newAgent(l.token(1))
+	l.enrolled(ag)
+
+	lost := make(chan struct{})
+	ind := &fakeIndicator{lost: lost}
+	med := &blockingMedia{started: make(chan struct{}), ended: make(chan struct{})}
+	ag.EnableRemote(ind, med)
+	_ = l.st.GrantGroup("joao", "*")
+
+	g, token, err := server.CreateSession(l.st, l.admin, l.signers, ag.state.AgentID, "joao", proto.ModeView, proto.EngineScreenshot, relayURL(rs), 10*time.Minute, "teste")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { consoleConnect(t, rs, g.SessionID, token) }()
+	time.Sleep(50 * time.Millisecond)
+	if err := ag.CheckinOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-med.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("mídia não iniciou")
+	}
+	close(lost) // indicador caiu
+	select {
+	case <-med.ended:
+	case <-time.After(2 * time.Second):
+		t.Fatal("mídia não encerrou após o indicador cair")
+	}
 }
 
 // Concessão forjada (assinada por chave que não é do admin) é recusada: o

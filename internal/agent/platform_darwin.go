@@ -101,3 +101,7 @@ func RunService(run func(ctx context.Context), _ *slog.Logger) error {
 	run(ctx)
 	return nil
 }
+
+// No Linux/macOS o indicador é um toast do próprio SO, sem helper separado.
+func installHelper(string) error { return nil }
+func removeHelper()              {}
