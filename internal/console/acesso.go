@@ -45,6 +45,7 @@ type Console struct {
 	ca        *x509.CertPool // pool da NOSSA CA: única raiz aceita para o cert do operador
 	intervalo time.Duration  // intervalo de check-in dos agentes (base do "online")
 	agora     func() time.Time
+	relayBase string // wss:// do relay aceito em concessões (vazio = concessões desligadas)
 }
 
 // NovoConsole monta o console. Exige que o Autenticador e o store sejam os

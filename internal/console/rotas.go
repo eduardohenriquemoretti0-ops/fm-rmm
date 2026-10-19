@@ -44,6 +44,8 @@ func (c *Console) Roteador() http.Handler {
 	mux.Handle("POST /api/registro/fim", c.soCert(c.registroFim))
 	mux.Handle("GET /api/agentes", c.protegido(c.listarAgentes))
 	mux.Handle("GET /api/agentes/{id}", c.protegido(c.detalheAgente))
+	mux.Handle("POST /api/acoes", c.protegido(c.criarAcao))
+	mux.Handle("POST /api/operador/chave-assinatura", c.protegido(c.registrarChaveAssinatura))
 	return SecurityHeaders(mux)
 }
 

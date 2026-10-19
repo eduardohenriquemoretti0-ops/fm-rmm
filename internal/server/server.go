@@ -228,14 +228,10 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	if grants, err := s.Store.TakeSessions(a.ID); err != nil {
 		s.Log.Error("sessões", "agente", a.ID, "erro", err)
 	} else {
+		ts := s.confiancaEntrega()
 		for _, sg := range grants {
-			pub, ok := s.Signers[sg.KeyID]
-			if !ok {
-				s.audit("sessao.bloqueada", "servidor", map[string]any{"motivo": "chave do emissor desconhecida"})
-				continue
-			}
-			if g, err := sign.VerifyGrant(pub, sg, a.ID, time.Now()); err != nil {
-				s.audit("sessao.bloqueada", "servidor", map[string]any{"sessao": g.SessionID, "motivo": err.Error()})
+			if g, err := sign.VerifyGrantAny(ts, sg, a.ID, time.Now()); err != nil {
+				s.audit("sessao.bloqueada", "servidor", map[string]any{"sessao": g.SessionID, "motivo": err.Error(), "chave": sg.KeyID})
 				continue
 			}
 			resp.Grants = append(resp.Grants, sg)
@@ -247,26 +243,48 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	} else if v > 0 {
 		resp.Lista = &proto.SignedSignerList{Raw: raw, Sig: sig}
 	}
+	tsJobs := s.confiancaEntrega()
 	for _, j := range jobs {
 		var sj proto.SignedJob
 		if err := json.Unmarshal([]byte(j.Signed), &sj); err != nil {
 			s.Log.Error("job ilegível no banco", "job", j.ID)
 			continue
 		}
-		// defesa em profundidade: o servidor também confere a assinatura
-		pub, ok := s.Signers[sj.KeyID]
-		if !ok {
-			s.audit("job.bloqueado", "servidor", map[string]any{"job": j.ID, "motivo": "chave do emissor desconhecida"})
-			continue
-		}
-		if _, err := sign.VerifyJob(pub, sj, a.ID, time.Now()); err != nil {
-			s.audit("job.bloqueado", "servidor", map[string]any{"job": j.ID, "motivo": err.Error()})
+		// defesa em profundidade: o servidor também confere a assinatura, contra
+		// os admins (Signers) E os operadores aptos (não só "emissor conhecido")
+		if _, err := sign.VerifyJobAny(tsJobs, sj, a.ID, time.Now()); err != nil {
+			s.audit("job.bloqueado", "servidor", map[string]any{"job": j.ID, "motivo": err.Error(), "chave": sj.KeyID})
 			continue
 		}
 		resp.Jobs = append(resp.Jobs, sj)
 		s.audit("job.entregue", "servidor", map[string]any{"job": j.ID, "agente": a.ID, "acao": j.Action})
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// confiancaEntrega é o conjunto de chaves que o servidor aceita ao ENTREGAR
+// jobs/concessões: admins (Signers) mais os operadores aptos (ativos, com chave
+// de assinatura, de técnico habilitado). É só defesa em profundidade; a decisão
+// final é do agente, que usa o trust-set ancorado na raiz (lista publicada).
+// Falha ao ler operadores: cai para só os admins (fail-closed para operadores).
+func (s *Server) confiancaEntrega() sign.TrustSet {
+	ts := sign.TrustSet{}
+	for id, pub := range s.Signers {
+		ts.Keys = append(ts.Keys, sign.TrustedKey{KeyID: id, Pub: pub, Role: sign.RoleAdmin})
+	}
+	ops, err := s.Store.OperadoresParaLista()
+	if err != nil {
+		s.Log.Error("operadores aptos", "erro", err)
+		return ts
+	}
+	for _, o := range ops {
+		pub, err := sign.DecodePub(o.Pub)
+		if err != nil {
+			continue
+		}
+		ts.Keys = append(ts.Keys, sign.TrustedKey{KeyID: o.KeyID, Pub: pub, Role: sign.RoleOperator})
+	}
+	return ts
 }
 
 func (s *Server) handleResult(w http.ResponseWriter, r *http.Request) {
