@@ -2,8 +2,8 @@
 //
 // Encadeamento das rotas protegidas (ordem fixa, fail-closed em cada elo):
 //
-//	SecurityHeaders -> comCert (cadeia do cert contra a NOSSA CA + operador
-//	pelo thumbprint) -> comSessao (token ligado ao thumbprint, via
+//	SecurityHeaders -> comCert (cadeia do cert contra a NOSSA CA + PERFIL de
+//	operador + operador pelo thumbprint) -> comSessao (token ligado ao thumbprint, via
 //	SessionManager.Validate) -> comCSRF (só em POST/PUT/PATCH/DELETE, via
 //	Session.CheckCSRF) -> handler.
 //
@@ -22,7 +22,9 @@ import (
 	"crypto/x509"
 	"errors"
 	"net/http"
+	"time"
 
+	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/pki"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/server"
 )
 
@@ -37,23 +39,28 @@ const (
 // Console reúne as dependências do acesso do operador. Só o construtor
 // NovoConsole o monta, com validação das dependências.
 type Console struct {
-	sessoes *SessionManager
-	aut     *Autenticador
-	st      *server.Store
-	ca      *x509.CertPool // pool da NOSSA CA: única raiz aceita para o cert do operador
+	sessoes   *SessionManager
+	aut       *Autenticador
+	st        *server.Store
+	ca        *x509.CertPool // pool da NOSSA CA: única raiz aceita para o cert do operador
+	intervalo time.Duration  // intervalo de check-in dos agentes (base do "online")
+	agora     func() time.Time
 }
 
 // NovoConsole monta o console. Exige que o Autenticador e o store sejam os
 // mesmos passados aqui, senão uma sessão criada por um manager poderia ser
-// validada por outro.
-func NovoConsole(sessoes *SessionManager, aut *Autenticador, st *server.Store, ca *x509.CertPool) (*Console, error) {
+// validada por outro. intervalo é o check-in dos agentes (ex.: 60s).
+func NovoConsole(sessoes *SessionManager, aut *Autenticador, st *server.Store, ca *x509.CertPool, intervalo time.Duration) (*Console, error) {
 	if sessoes == nil || aut == nil || st == nil || ca == nil {
 		return nil, errors.New("console: sessões, autenticador, store e CA são obrigatórios")
 	}
 	if aut.sm != sessoes || aut.st != st {
 		return nil, errors.New("console: autenticador deve usar o mesmo SessionManager e store")
 	}
-	return &Console{sessoes: sessoes, aut: aut, st: st, ca: ca}, nil
+	if intervalo <= 0 {
+		return nil, errors.New("console: intervalo de check-in deve ser positivo")
+	}
+	return &Console{sessoes: sessoes, aut: aut, st: st, ca: ca, intervalo: intervalo, agora: time.Now}, nil
 }
 
 // chaves de contexto: o middleware põe o operador e a sessão; os handlers leem.
@@ -103,6 +110,12 @@ func (c *Console) comCert(next http.Handler) http.Handler {
 			Intermediates: inter,
 			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		}); err != nil {
+			negado(w)
+			return
+		}
+		// T3b: cadeia válida NÃO basta. Cert de agente é da mesma CA; só o
+		// perfil de operador (Organization) o diferencia.
+		if !pki.EhOperador(leaf) {
 			negado(w)
 			return
 		}

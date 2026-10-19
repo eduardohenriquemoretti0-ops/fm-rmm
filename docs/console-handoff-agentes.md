@@ -55,7 +55,7 @@ disponível no proxy.
   `ErrClienteDiferente`.
 
 ### T4 — Endpoints read-only (agente: dev-golang / Otávio)
-- `GET /api/agents` (lista + `Online` + últimos `hardware`/`saude`/`atualizacoes`),
+- `GET /api/agentes` (lista + `Online` + últimos `hardware`/`saude`/`atualizacoes`),
   **filtrado por RBAC** aos grupos do operador. `GET /api/agents/{id}` detalhe.
 - Toda leitura entra na auditoria. Sem dado de outro grupo (testar IDOR).
 - **Aceite:** teste de RBAC (operador do grupo A não vê agente do grupo B) + shape JSON.

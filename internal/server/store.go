@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -187,7 +188,9 @@ type Agent struct {
 	ID, Hostname, OS, Status, CSRPEM, CertPEM, CertSerial, RemoteAddr, TokenID string
 	CertExpires, EnrolledAt, ApprovedAt, LastSeen                              int64
 	Heartbeat                                                                  string
-	pollHash                                                                   string
+	// Grupo é o grupo do agente (RBAC): agents.grp, default 'default'.
+	Grupo    string
+	pollHash string
 }
 
 // Online diz se o agente deu check-in dentro de 2× o intervalo (janela de
@@ -227,12 +230,12 @@ func (s *Store) Enroll(token, hostname, goos, csrPEM, remote string) (agentID, p
 	return agentID, poll, tx.Commit()
 }
 
-const agentCols = `id, hostname, os, status, csr_pem, cert_pem, cert_serial, cert_expires, poll_hash, token_id, remote_addr, enrolled_at, approved_at, last_seen, heartbeat`
+const agentCols = `id, hostname, os, status, csr_pem, cert_pem, cert_serial, cert_expires, poll_hash, token_id, remote_addr, enrolled_at, approved_at, last_seen, heartbeat, grp`
 
 func scanAgent(sc interface{ Scan(...any) error }) (Agent, error) {
 	var a Agent
 	err := sc.Scan(&a.ID, &a.Hostname, &a.OS, &a.Status, &a.CSRPEM, &a.CertPEM, &a.CertSerial, &a.CertExpires,
-		&a.pollHash, &a.TokenID, &a.RemoteAddr, &a.EnrolledAt, &a.ApprovedAt, &a.LastSeen, &a.Heartbeat)
+		&a.pollHash, &a.TokenID, &a.RemoteAddr, &a.EnrolledAt, &a.ApprovedAt, &a.LastSeen, &a.Heartbeat, &a.Grupo)
 	return a, err
 }
 
@@ -500,6 +503,38 @@ func (s *Store) Jobs(agentID string, limit int) ([]Job, error) {
 	if agentID != "" {
 		q, args = `SELECT `+jobCols+` FROM jobs WHERE agent_id=? ORDER BY created_at DESC LIMIT ?`, []any{agentID, limit}
 	}
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// ResultadosDeLeitura devolve os últimos jobs JÁ FINALIZADOS do agente cujas
+// ações estão em acoes (ex.: só as read-only). Leitura pura: não altera nada.
+// Mais novos primeiro; limit limita a quantidade.
+func (s *Store) ResultadosDeLeitura(agentID string, acoes []string, limit int) ([]Job, error) {
+	if len(acoes) == 0 || limit <= 0 {
+		return nil, nil
+	}
+	marcas := make([]string, len(acoes))
+	args := []any{agentID}
+	for i, a := range acoes {
+		marcas[i] = "?"
+		args = append(args, a)
+	}
+	args = append(args, limit)
+	q := `SELECT ` + jobCols + ` FROM jobs WHERE agent_id=? AND finished_at > 0 AND action IN (` +
+		strings.Join(marcas, ",") + `) ORDER BY finished_at DESC, id DESC LIMIT ?`
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err

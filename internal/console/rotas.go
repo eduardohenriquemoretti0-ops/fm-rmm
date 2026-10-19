@@ -24,6 +24,8 @@ const limiteCorpo = 64 << 10
 //	POST /api/logout              sessão + CSRF -> revoga a sessão
 //	POST /api/registro/inicio     cert do operador PENDENTE -> opções de registro
 //	POST /api/registro/fim        cert do operador PENDENTE + atestado -> credencial
+//	GET  /api/agentes             sessão -> agentes visíveis ao operador (RBAC)
+//	GET  /api/agentes/{id}        sessão -> detalhe + últimos resultados de leitura (404 sem RBAC)
 //
 // O registro não tem sessão (o operador ainda não loga): fica atrás só do cert,
 // e o Autenticador recusa tudo que não seja operador 'pendente'. A ativação
@@ -40,6 +42,8 @@ func (c *Console) Roteador() http.Handler {
 	mux.Handle("POST /api/logout", c.protegido(c.logout))
 	mux.Handle("POST /api/registro/inicio", c.soCert(c.registroInicio))
 	mux.Handle("POST /api/registro/fim", c.soCert(c.registroFim))
+	mux.Handle("GET /api/agentes", c.protegido(c.listarAgentes))
+	mux.Handle("GET /api/agentes/{id}", c.protegido(c.detalheAgente))
 	return SecurityHeaders(mux)
 }
 

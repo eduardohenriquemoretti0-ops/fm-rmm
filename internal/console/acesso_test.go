@@ -37,14 +37,14 @@ func novoAmbiente(t *testing.T) *ambiente {
 	}
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
-	c, err := NovoConsole(f.sm, f.a, f.st, pool)
+	c, err := NovoConsole(f.sm, f.a, f.st, pool, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &ambiente{f: f, c: c, ca: ca, caK: caK, pool: pool}
 }
 
-// certDe emite um cert de cliente de uma CA (o agente é o emissor de cliente na pki).
+// certDe emite um cert de OPERADOR de uma CA (perfil de operador, T3b).
 func certDe(t *testing.T, ca *x509.Certificate, caK *ecdsa.PrivateKey, id string) (*x509.Certificate, *ecdsa.PrivateKey) {
 	t.Helper()
 	chave, csrPEM, err := pki.NewAgentKeyAndCSR(id)
@@ -55,7 +55,7 @@ func certDe(t *testing.T, ca *x509.Certificate, caK *ecdsa.PrivateKey, id string
 	if err != nil {
 		t.Fatal(err)
 	}
-	cert, err := pki.SignAgent(ca, caK, csr, id)
+	cert, err := pki.SignOperator(ca, caK, csr, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,10 +406,10 @@ func TestSessaoDeOperadorInativoCai(t *testing.T) {
 func TestNovoConsoleValidaDependencias(t *testing.T) {
 	a := novoAmbiente(t)
 	outraSM := NewSessionManager(time.Minute, time.Minute)
-	if _, err := NovoConsole(outraSM, a.f.a, a.f.st, a.pool); err == nil {
+	if _, err := NovoConsole(outraSM, a.f.a, a.f.st, a.pool, time.Minute); err == nil {
 		t.Error("aceitou SessionManager diferente do autenticador")
 	}
-	if _, err := NovoConsole(a.f.sm, a.f.a, a.f.st, nil); err == nil {
+	if _, err := NovoConsole(a.f.sm, a.f.a, a.f.st, nil, time.Minute); err == nil {
 		t.Error("aceitou CA nula")
 	}
 }

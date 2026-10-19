@@ -16,13 +16,22 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"slices"
 	"time"
 )
 
 const (
-	CAValidity     = 10 * 365 * 24 * time.Hour
-	ServerValidity = 2 * 365 * 24 * time.Hour
-	AgentValidity  = 365 * 24 * time.Hour
+	CAValidity       = 10 * 365 * 24 * time.Hour
+	ServerValidity   = 2 * 365 * 24 * time.Hour
+	AgentValidity    = 365 * 24 * time.Hour
+	OperatorValidity = 365 * 24 * time.Hour
+)
+
+// Organization dos certificados de cliente. O perfil é o que separa os dois
+// papéis: cert de AGENTE não pode entrar como OPERADOR no console (T3b).
+const (
+	OrgAgente   = "FM-RMM agente"
+	OrgOperador = "FM-RMM operador"
 )
 
 func serial() (*big.Int, error) {
@@ -147,7 +156,7 @@ func SignAgent(ca *x509.Certificate, caKey crypto.Signer, csr *x509.CertificateR
 	now := time.Now()
 	tpl := &x509.Certificate{
 		SerialNumber: sn,
-		Subject:      pkix.Name{CommonName: agentID, Organization: []string{"FM-RMM agente"}},
+		Subject:      pkix.Name{CommonName: agentID, Organization: []string{OrgAgente}},
 		NotBefore:    now.Add(-time.Hour),
 		NotAfter:     now.Add(AgentValidity),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -158,6 +167,38 @@ func SignAgent(ca *x509.Certificate, caKey crypto.Signer, csr *x509.CertificateR
 		return nil, err
 	}
 	return x509.ParseCertificate(der)
+}
+
+// SignOperator emite o certificado de cliente do OPERADOR do console. Espelha
+// SignAgent, mas com perfil distinto (Organization "FM-RMM operador"): o
+// console recusa cert sem esse perfil, então cert de agente não serve de operador.
+// O CN é SEMPRE o id do operador definido pelo servidor.
+func SignOperator(ca *x509.Certificate, caKey crypto.Signer, csr *x509.CertificateRequest, operadorID string) (*x509.Certificate, error) {
+	sn, err := serial()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	tpl := &x509.Certificate{
+		SerialNumber: sn,
+		Subject:      pkix.Name{CommonName: operadorID, Organization: []string{OrgOperador}},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(OperatorValidity),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, ca, csr.PublicKey, caKey)
+	if err != nil {
+		return nil, err
+	}
+	return x509.ParseCertificate(der)
+}
+
+// EhOperador diz se o certificado tem o perfil de operador do console (e não
+// o de agente). Não substitui a verificação de cadeia contra a CA.
+func EhOperador(c *x509.Certificate) bool {
+	return slices.Contains(c.Subject.Organization, OrgOperador) &&
+		!slices.Contains(c.Subject.Organization, OrgAgente)
 }
 
 // NewAgentKeyAndCSR roda no agente: a chave privada nunca sai da máquina.
