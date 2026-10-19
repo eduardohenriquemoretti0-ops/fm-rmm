@@ -59,6 +59,11 @@ Operação:
   session  --dir D list
   view     --dir D --relay-url wss://host:8443 --session ses-... --token TOK --out DIR [--frames N]  (console: recebe e salva a tela)
   audit    --dir D verify | list [--tail 50]
+Operadores do console (ver docs/console-onboarding-operador.md):
+  operadores create --dir D --tech TECNICO --nome N [--display X]   cria (status pendente); imprime o id
+  operadores cert   --dir D --id OPID --out DIR [--reemitir]        gera chave+cert de cliente (modo direto, LAB) e liga o thumbprint
+  operadores list   --dir D                                         id, técnico, status, tem_cert, credenciais, tem_signing_pub
+  operadores activate --dir D --id OPID                             ativa (exige cert e 2 credenciais WebAuthn)
 Lista de signers (trust-set dos agentes; a RAIZ fica OFFLINE):
   signers  --dir D export [--out export.json]              versão atual + operadores aptos (sem segredos)
   signers  build --key admin.key (--export export.json | --operators-file ops.json [--versao-atual N]) [--out DIR]
@@ -100,6 +105,8 @@ func main() {
 		err = cmdAudit(args)
 	case "signers":
 		err = cmdSigners(args)
+	case "operadores":
+		err = cmdOperadores(args)
 	case "catalog":
 		cmdCatalog()
 	case "version":
@@ -1100,4 +1107,84 @@ func cmdCatalog() {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", n, alt, strings.Join(oss, ","), strings.Join(ps, " "), a.Desc)
 	}
 	tw.Flush()
+}
+
+// cmdOperadores: onboarding de operador do console (ação de ADMIN, local).
+// O grupo/acesso do operador é o do técnico ao qual ele está ligado.
+func cmdOperadores(args []string) error {
+	if len(args) == 0 {
+		return errors.New("uso: operadores create|cert|list|activate")
+	}
+	sub, rest := args[0], args[1:]
+	fs := flag.NewFlagSet("operadores "+sub, flag.ExitOnError)
+	dir := dirFlag(fs)
+	tech := fs.String("tech", "", "técnico existente (create)")
+	nome := fs.String("nome", "", "nome do operador (create)")
+	display := fs.String("display", "", "nome de exibição (create; padrão = nome)")
+	id := fs.String("id", "", "id do operador (cert/activate)")
+	out := fs.String("out", "", "diretório de saída do cert (cert)")
+	reemitir := fs.Bool("reemitir", false, "cert: reemite mesmo já havendo cert (invalida o anterior)")
+	fs.Parse(rest)
+	st, err := openStore(*dir)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	switch sub {
+	case "create":
+		if *tech == "" || *nome == "" {
+			return errors.New("informe --tech e --nome")
+		}
+		opID, err := server.NovoIDOperador()
+		if err != nil {
+			return err
+		}
+		if *display == "" {
+			*display = *nome
+		}
+		if err := st.CreateOperator(server.Operator{ID: opID, Nome: *nome, DisplayName: *display, TechName: *tech}); err != nil {
+			return err
+		}
+		fmt.Println(opID)
+		return st.Audit("operador.criado", actor(), map[string]any{"operador": opID, "tecnico": *tech})
+	case "cert":
+		if *id == "" || *out == "" {
+			return errors.New("informe --id e --out")
+		}
+		thumb, cert, err := server.EmitirCertOperador(st, *dir, *id, *out, *reemitir)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("operador %s: cert emitido (válido até %s)\nthumbprint: %s\narquivos em %s: %s, %s, %s\n",
+			*id, cert.NotAfter.Format(time.DateOnly), thumb, *out, server.FileOperadorKey, server.FileOperadorCrt, server.FileOperadorCA)
+		fmt.Printf("importar no navegador (.p12): openssl pkcs12 -export -inkey %s -in %s -certfile %s -out operador.p12\n",
+			filepath.Join(*out, server.FileOperadorKey), filepath.Join(*out, server.FileOperadorCrt), filepath.Join(*out, server.FileOperadorCA))
+		fmt.Println("ATENÇÃO: modo direto (lab) - a chave privada foi gerada aqui; entregue por canal seguro e apague as cópias.")
+		return st.Audit("operador.cert.emitido", actor(), map[string]any{"operador": *id, "thumbprint": thumb})
+	case "list":
+		ops, err := st.Operators()
+		if err != nil {
+			return err
+		}
+		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "ID\tTÉCNICO\tNOME\tSTATUS\tTEM_CERT\tCREDENCIAIS\tTEM_SIGNING_PUB")
+		for _, o := range ops {
+			creds, err := st.Credentials(o.ID)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%t\t%d\t%t\n", o.ID, o.TechName, o.Nome, o.Status, o.CertThumbprint != "", len(creds), o.SigningPub != "")
+		}
+		return tw.Flush()
+	case "activate":
+		if *id == "" {
+			return errors.New("informe --id")
+		}
+		if err := server.AtivarOperador(st, *id); err != nil {
+			return err
+		}
+		fmt.Printf("operador %s: ativo\n", *id)
+		return st.Audit("operador.ativado", actor(), map[string]any{"operador": *id})
+	}
+	return fmt.Errorf("subcomando desconhecido: %s", sub)
 }

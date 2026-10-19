@@ -1,0 +1,110 @@
+# Onboarding de operador do console — runbook do admin
+
+Provisiona um operador do console (FM-RMM) do zero até o agente aceitar as ações
+assinadas por ele. Serve para o pentest (T8) e para uso real. Referências:
+`console-seguranca.md` (modelo de ameaça, recuperação) e
+`console-handoff-agentes.md`.
+
+Convenções: `D` = diretório do servidor (`/var/lib/fmrmm-server`), `OPID` = id do
+operador (ex.: `op-d3c854c58337688b`). Os passos 1-3, 6 e 7 (export/publish) rodam
+no servidor; **o passo 7 (build) roda OFFLINE** com a chave raiz.
+
+## Regras que o runbook respeita
+- O **grupo/acesso do operador é o do técnico** ao qual ele está ligado (sem RBAC novo).
+- Recuperação = **duas chaves WebAuthn** por operador (principal + backup), sem
+  e-mail/SMS. Troca de chave de assinatura é **só do admin**, fora de banda.
+- A **raiz nunca fica no servidor**. Cadastrar a chave de assinatura NÃO dá
+  confiança ao agente: só a lista assinada offline (passo 7) dá.
+
+## Ordem real (importante)
+O login exige operador **ativo**, e a rota `POST /api/operador/chave-assinatura`
+exige sessão (login + step-up). Logo a **ativação vem ANTES do cadastro da chave
+de assinatura** (um operador `pendente` não consegue logar nem cadastrar a
+chave). A ordem abaixo já reflete isso.
+
+## 1. Técnico e grupo
+```bash
+fmrmm-server techs --dir D list
+fmrmm-server techs --dir D add joao              # se ainda não existe
+fmrmm-server techs --dir D grant joao lab        # grupo(s) que o operador poderá ver/agir ('*' = todos)
+```
+
+## 2. Criar o operador (status `pendente`)
+```bash
+fmrmm-server operadores create --dir D --tech joao --nome "Maria Silva" [--display "Maria S."]
+# imprime o id: op-xxxxxxxxxxxxxxxx   (anote como OPID)
+```
+
+## 3. Emitir o cert de cliente (mTLS) e importar no navegador
+```bash
+fmrmm-server operadores cert --dir D --id OPID --out ./cert-OPID
+# grava operador.key (0600), operador.crt e ca.crt; registra o thumbprint no operador
+openssl pkcs12 -export -inkey ./cert-OPID/operador.key -in ./cert-OPID/operador.crt \
+  -certfile ./cert-OPID/ca.crt -out operador.p12        # pede uma senha de exportação
+```
+Importe `operador.p12` no navegador (Configurações > Certificados > Seus
+certificados) e `ca.crt` como autoridade confiável, para o navegador confiar no
+servidor do console. Depois **apague** `operador.key` e o `.p12` do disco do
+servidor/admin (entregue por canal seguro).
+
+> **Modo direto = só lab.** `operadores cert` gera a chave privada no servidor.
+> Em **produção o ideal é CSR gerado na máquina do operador** (a privada nunca
+> sai de lá) e o admin só assinar com `pki.SignOperator` — ainda sem subcomando
+> próprio para isso. Reemitir (`--reemitir`) invalida o cert anterior.
+
+Subir o console (se ainda não está no ar):
+```bash
+fmrmm-server serve --dir D --console-addr :9443 --rp-id rmm.exemplo.com \
+  --rp-origin https://rmm.exemplo.com:9443 --web-dist web/dist --relay-url wss://rmm.exemplo.com:8443
+```
+
+## 4. Registro WebAuthn com DUAS chaves (operador, no console)
+No navegador com o cert importado, abra `https://rmm.exemplo.com:9443`, informe o
+OPID e registre **a chave principal e a de backup** (rotas `/api/registro/inicio`
+e `/api/registro/fim`, que só funcionam com o operador `pendente`). Verifique:
+```bash
+fmrmm-server operadores list --dir D     # CREDENCIAIS deve ser 2, TEM_CERT true
+```
+
+## 5. Ativar o operador (admin)
+```bash
+fmrmm-server operadores activate --dir D --id OPID
+# recusa se não houver cert ou se houver menos de 2 credenciais WebAuthn
+```
+
+## 6. Cadastrar a chave de assinatura (operador, no console)
+Agora o operador loga (WebAuthn + mTLS). No SPA, o navegador gera o par Ed25519
+**não exportável** e chama `POST /api/operador/chave-assinatura` (sessão + CSRF +
+step-up + prova de posse). Só a **primeira** vez; troca é do admin. Verifique:
+```bash
+fmrmm-server operadores list --dir D     # TEM_SIGNING_PUB true
+```
+
+## 7. Lista de signers (admin, chave raiz OFFLINE)
+```bash
+# no servidor:
+fmrmm-server signers --dir D export --out export.json
+# na máquina OFFLINE da raiz (leve export.json por mídia):
+fmrmm-server signers build --key admin.key --export export.json --out ./lista
+#   gera ./lista/trust-list.json e ./lista/trust-list.sig
+# de volta ao servidor (SignerID = o do bundle, ver `bundle`/bundle.json):
+fmrmm-server signers --dir D publish --raiz KEYID_RAIZ \
+  --lista ./lista/trust-list.json --sig ./lista/trust-list.sig
+```
+Só entram na lista operadores **ativos, com chave de assinatura e de técnico não
+desabilitado**. O publish confere a raiz e só aceita versão maior.
+
+## 8. Agentes
+Cada agente recebe a lista no próximo check-in (intervalo `--interval`, padrão
+60 s), valida a assinatura da raiz e passa a aceitar as ações assinadas pelo
+operador. Teste: o operador cria uma ação de baixo risco no console e confira
+`fmrmm-server jobs --dir D list` e `audit --dir D list --tail 20`.
+
+## Operações do dia a dia
+- Estado de todos: `fmrmm-server operadores list --dir D`
+  (colunas: ID, TÉCNICO, NOME, STATUS, TEM_CERT, CREDENCIAIS, TEM_SIGNING_PUB).
+- Desligar um operador: `techs disable NOME` (sai da lista no próximo `export`/publish).
+- Perdeu as duas chaves ou a chave de assinatura: re-provisionamento pelo admin,
+  fora de banda (novo operador ou intervenção no banco); não existe recuperação por e-mail/SMS.
+- Toda etapa do admin é registrada na auditoria encadeada
+  (`operador.criado`, `operador.cert.emitido`, `operador.ativado`).
