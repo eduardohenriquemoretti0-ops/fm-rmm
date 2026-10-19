@@ -48,6 +48,20 @@ CREATE TRIGGER IF NOT EXISTS audit_sem_update BEFORE UPDATE ON audit
   BEGIN SELECT RAISE(ABORT, 'auditoria é append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_sem_delete BEFORE DELETE ON audit
   BEGIN SELECT RAISE(ABORT, 'auditoria é append-only'); END;
+-- tech_name: o operador é um técnico (techs.name); o RBAC é o do técnico (CanAccess)
+CREATE TABLE IF NOT EXISTS operators (
+  id TEXT PRIMARY KEY, nome TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '',
+  cert_thumbprint TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, criado_em INTEGER NOT NULL,
+  tech_name TEXT NOT NULL REFERENCES techs(name)
+);
+-- um cert de operador identifica uma pessoa só (thumbprint vazio = sem cert ainda)
+CREATE UNIQUE INDEX IF NOT EXISTS operators_thumb ON operators(cert_thumbprint) WHERE cert_thumbprint <> '';
+CREATE TABLE IF NOT EXISTS operator_credentials (
+  credential_id TEXT PRIMARY KEY, operator_id TEXT NOT NULL REFERENCES operators(id),
+  public_key BLOB NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0,
+  aaguid TEXT NOT NULL DEFAULT '', criado_em INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS operator_credentials_op ON operator_credentials(operator_id);
 `
 
 // Store guarda tudo do servidor num SQLite (seguro para o servidor e a CLI
@@ -292,11 +306,126 @@ func (s *Store) Seen(id, heartbeat, goos string) error {
 	return err
 }
 
+// --------------------------------------------------------------- operadores
+
+// Operator é quem usa o console web. O login é por credencial WebAuthn
+// (operator_credentials); o cert mTLS do operador fica ligado por thumbprint.
+type Operator struct {
+	ID, Nome, DisplayName, CertThumbprint, Status, TechName string
+	CriadoEm                                                int64
+}
+
+// OperatorCredential é uma chave WebAuthn do operador (o cadastro exige duas:
+// a principal e a de backup).
+type OperatorCredential struct {
+	CredentialID, OperatorID string
+	PublicKey                []byte
+	SignCount                uint32
+	AAGUID                   string
+	CriadoEm                 int64
+}
+
+const operatorCols = `id, nome, display_name, cert_thumbprint, status, criado_em, tech_name`
+
+func scanOperator(sc interface{ Scan(...any) error }) (Operator, error) {
+	var o Operator
+	err := sc.Scan(&o.ID, &o.Nome, &o.DisplayName, &o.CertThumbprint, &o.Status, &o.CriadoEm, &o.TechName)
+	return o, err
+}
+
+// CreateOperator cadastra o operador ligado a um técnico existente (tech_name).
+// O acesso do operador é o do técnico (CanAccess). Sem status, entra como
+// 'pendente' (não loga até registrar as credenciais e o cert).
+func (s *Store) CreateOperator(op Operator) error {
+	if op.ID == "" || op.Nome == "" {
+		return errors.New("operador precisa de id e nome")
+	}
+	if op.TechName == "" {
+		return errors.New("operador precisa de um técnico (tech_name)")
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM techs WHERE name=?`, op.TechName).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("técnico %q não existe", op.TechName)
+	}
+	if op.Status == "" {
+		op.Status = "pendente"
+	}
+	_, err := s.db.Exec(`INSERT INTO operators(id, nome, display_name, cert_thumbprint, status, criado_em, tech_name) VALUES (?,?,?,?,?,?,?)`,
+		op.ID, op.Nome, op.DisplayName, op.CertThumbprint, op.Status, time.Now().Unix(), op.TechName)
+	return err
+}
+
+func (s *Store) GetOperator(id string) (Operator, error) {
+	o, err := scanOperator(s.db.QueryRow(`SELECT `+operatorCols+` FROM operators WHERE id=?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return o, ErrNotFound
+	}
+	return o, err
+}
+
+// OperatorByThumbprint acha o operador dono do cert mTLS (T3 usa no handshake).
+func (s *Store) OperatorByThumbprint(thumb string) (Operator, error) {
+	if thumb == "" {
+		return Operator{}, ErrNotFound
+	}
+	o, err := scanOperator(s.db.QueryRow(`SELECT `+operatorCols+` FROM operators WHERE cert_thumbprint=?`, thumb))
+	if errors.Is(err, sql.ErrNoRows) {
+		return o, ErrNotFound
+	}
+	return o, err
+}
+
+// SetOperatorThumbprint liga o cert mTLS do operador. Thumbprint repetido em
+// outro operador é recusado pelo índice único.
+func (s *Store) SetOperatorThumbprint(id, thumb string) error {
+	if thumb == "" {
+		return errors.New("thumbprint do cert não pode ser vazio")
+	}
+	r, err := s.db.Exec(`UPDATE operators SET cert_thumbprint=? WHERE id=?`, thumb, id)
+	return oneRow(r, err)
+}
+
+// AddCredential registra uma chave WebAuthn. credential_id é chave primária:
+// a mesma credencial não entra duas vezes.
+func (s *Store) AddCredential(c OperatorCredential) error {
+	_, err := s.db.Exec(`INSERT INTO operator_credentials(credential_id, operator_id, public_key, sign_count, aaguid, criado_em) VALUES (?,?,?,?,?,?)`,
+		c.CredentialID, c.OperatorID, c.PublicKey, c.SignCount, c.AAGUID, time.Now().Unix())
+	return err
+}
+
+// Credentials devolve as credenciais do operador (vazio se não houver).
+func (s *Store) Credentials(operatorID string) ([]OperatorCredential, error) {
+	rows, err := s.db.Query(`SELECT credential_id, operator_id, public_key, sign_count, aaguid, criado_em
+		FROM operator_credentials WHERE operator_id=? ORDER BY criado_em, credential_id`, operatorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OperatorCredential
+	for rows.Next() {
+		var c OperatorCredential
+		if err := rows.Scan(&c.CredentialID, &c.OperatorID, &c.PublicKey, &c.SignCount, &c.AAGUID, &c.CriadoEm); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// UpdateSignCount grava o contador de assinaturas da credencial.
+func (s *Store) UpdateSignCount(credentialID string, n uint32) error {
+	r, err := s.db.Exec(`UPDATE operator_credentials SET sign_count=? WHERE credential_id=?`, n, credentialID)
+	return oneRow(r, err)
+}
+
 // -------------------------------------------------------------------- jobs
 
 type Job struct {
-	ID, AgentID, Action, Params, Signed, Issuer, Status, Result      string
-	CreatedAt, ExpiresAt, DeliveredAt, FinishedAt                     int64
+	ID, AgentID, Action, Params, Signed, Issuer, Status, Result string
+	CreatedAt, ExpiresAt, DeliveredAt, FinishedAt               int64
 }
 
 func (s *Store) AddJob(j Job) error {

@@ -88,7 +88,9 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func fail(w http.ResponseWriter, code int, msg string) { writeJSON(w, code, map[string]string{"erro": msg}) }
+func fail(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"erro": msg})
+}
 
 func readJSON(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
