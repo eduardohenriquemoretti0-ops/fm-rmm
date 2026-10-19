@@ -17,9 +17,10 @@ import (
 // testável em qualquer SO (ver indicator_hb_test.go).
 //
 // Protocolo (linhas \n):
-//   helper -> serviço: "HELLO <token>"  (prova de que subiu na sessão = ack)
-//   helper -> serviço: "HB"             (heartbeat periódico)
-//   serviço -> helper: "QUIT"           (no Stop: helper retira o aviso e sai)
+//
+//	helper -> serviço: "HELLO <token>"  (prova de que subiu na sessão = ack)
+//	helper -> serviço: "HB"             (heartbeat periódico)
+//	serviço -> helper: "QUIT"           (no Stop: helper retira o aviso e sai)
 //
 // Modelo de ameaça: o indicador existe para o USUÁRIO do endpoint saber da
 // sessão (transparência/LGPD). O token (passado só ao helper) barra heartbeat
@@ -59,11 +60,11 @@ func newHBServer(timeout time.Duration) (*hbServer, error) {
 	return s, nil
 }
 
-func (s *hbServer) addr() string           { return s.ln.Addr().String() }
-func (s *hbServer) token() string          { return s.tok }
-func (s *hbServer) Lost() <-chan struct{}  { return s.lost }
-func (s *hbServer) signalAck()             { s.ackOnce.Do(func() { close(s.acked) }) }
-func (s *hbServer) signalLost()            { s.lostOnce.Do(func() { close(s.lost) }) }
+func (s *hbServer) addr() string          { return s.ln.Addr().String() }
+func (s *hbServer) token() string         { return s.tok }
+func (s *hbServer) Lost() <-chan struct{} { return s.lost }
+func (s *hbServer) signalAck()            { s.ackOnce.Do(func() { close(s.acked) }) }
+func (s *hbServer) signalLost()           { s.lostOnce.Do(func() { close(s.lost) }) }
 
 func (s *hbServer) accept() {
 	for {

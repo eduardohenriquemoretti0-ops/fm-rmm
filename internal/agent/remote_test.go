@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/proto"
-	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/sign"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/server"
+	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/sign"
 )
 
 type fakeIndicator struct {
