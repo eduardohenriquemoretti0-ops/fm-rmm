@@ -388,6 +388,16 @@ func (s *Store) SetOperatorThumbprint(id, thumb string) error {
 	return oneRow(r, err)
 }
 
+// SetOperatorStatus muda o status do operador (ex.: 'pendente' -> 'ativo').
+// Quem chama é o administrador (CLI/handler com a checagem de permissão).
+func (s *Store) SetOperatorStatus(id, status string) error {
+	if status == "" {
+		return errors.New("status do operador não pode ser vazio")
+	}
+	r, err := s.db.Exec(`UPDATE operators SET status=? WHERE id=?`, status, id)
+	return oneRow(r, err)
+}
+
 // AddCredential registra uma chave WebAuthn. credential_id é chave primária:
 // a mesma credencial não entra duas vezes.
 func (s *Store) AddCredential(c OperatorCredential) error {

@@ -35,9 +35,49 @@ type Session struct {
 	csrf       string
 	created    time.Time
 	lastSeen   time.Time
+	stepUpAte  time.Time // step-up WebAuthn válido até (zero = sem step-up)
 }
 
 func (s *Session) OperatorThumbprint() string { return s.thumbprint }
+
+// StepUpMaxTTL limita a janela do step-up: nunca "vale para sempre".
+const StepUpMaxTTL = 5 * time.Minute
+
+// MarcarStepUp registra um step-up WebAuthn válido por ttl para a sessão. Exige
+// sessão viva e ligada ao cliente (mesmo thumbprint do Validate).
+func (m *SessionManager) MarcarStepUp(rawToken, thumbprint string, ttl time.Duration) error {
+	if ttl <= 0 || ttl > StepUpMaxTTL {
+		return errors.New("janela de step-up fora do limite")
+	}
+	s, err := m.Validate(rawToken, thumbprint)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s.stepUpAte = m.now().Add(ttl)
+	return nil
+}
+
+// StepUpValido diz se a sessão (ligada ao mesmo cliente) tem step-up dentro da
+// janela. Não renova nada: ação sensível confere isso antes de executar.
+func (m *SessionManager) StepUpValido(rawToken, thumbprint string) bool {
+	h := tokenHash(rawToken)
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.byHash[h]
+	if !ok {
+		return false
+	}
+	if now.Sub(s.created) > m.absoluteTTL || now.Sub(s.lastSeen) > m.idleTTL {
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(s.thumbprint), []byte(thumbprint)) != 1 {
+		return false
+	}
+	return !s.stepUpAte.IsZero() && now.Before(s.stepUpAte)
+}
 
 type SessionManager struct {
 	mu          sync.Mutex
