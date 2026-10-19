@@ -100,7 +100,7 @@ echo "== Equipamento"; system_profiler SPHardwareDataType | grep -E 'Model Name|
 
 	register(Action{
 		Name:    "hardware",
-		Desc:    "Fingerprint de hardware: UUID do sistema, placa-mãe, RAM por pente (serial/part), discos (serial/WWN/SMART) e status de ativação (nunca a chave)",
+		Desc:    "Fingerprint de hardware: UUID do sistema, placa-mãe, RAM por pente (serial/part), discos (serial/WWN quando houver/tipo/saúde) e status de ativação (nunca a chave)",
 		Timeout: 120 * time.Second,
 		Scripts: map[string]string{
 			"windows": psHead + `
@@ -116,7 +116,13 @@ $winApp = '55c92734-d682-4d71-983e-d6ec3f16059f'
   discos = @(Get-CimInstance Win32_DiskDrive | ForEach-Object {
     [pscustomobject]@{ modelo = $_.Model; serial = ($_.SerialNumber -replace '\s+$',''); interface = $_.InterfaceType; tamanho_gb = [math]::Round($_.Size / 1GB, 0) } })
   discos_fisicos = @(Get-CimInstance -Namespace 'root\Microsoft\Windows\Storage' -ClassName MSFT_PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
-    [pscustomobject]@{ serial = $_.SerialNumber; tipo = $_.MediaType; saude = $_.HealthStatus } })
+    $mt = switch ([int]$_.MediaType) { 3 {'HDD'} 4 {'SSD'} 5 {'SCM'} 0 {'Unspecified'} default {"Desconhecido($($_.MediaType))"} }
+    $hs = switch ([int]$_.HealthStatus) { 0 {'Healthy'} 1 {'Warning'} 2 {'Unhealthy'} 5 {'Unknown'} default {"Desconhecido($($_.HealthStatus))"} }
+    # WWN: só existe quando o UniqueId é um identificador NAA/EUI (hex); senão fica nulo.
+    $uid = "$($_.UniqueId)".Trim()
+    $wwn = $null
+    if ($uid -match '^(?:naa\.|eui\.)?([0-9A-Fa-f]{16,32})$') { $wwn = $Matches[1].ToUpperInvariant() }
+    [pscustomobject]@{ nome = $_.FriendlyName; serial = ($_.SerialNumber -replace '\s+$',''); unique_id = $uid; wwn = $wwn; tipo = $mt; saude = $hs } })
   ativacao = @(Get-CimInstance SoftwareLicensingProduct -Filter "ApplicationID='$winApp' AND PartialProductKey IS NOT NULL" -ErrorAction SilentlyContinue | ForEach-Object {
     [pscustomobject]@{ nome = $_.Name; licenciado = ($_.LicenseStatus -eq 1); status_codigo = $_.LicenseStatus } })
 } | ConvertTo-Json -Depth 5

@@ -76,6 +76,9 @@ try {
     $bundle = Get-ChildItem -Path $kitDir -Recurse -Filter 'bundle.json'     | Select-Object -First 1
     if (-not $agent)  { throw "fmrmm-agent.exe nao encontrado no kit." }
     if (-not $bundle) { throw "bundle.json nao encontrado no kit." }
+    if (-not (Test-Path -LiteralPath (Join-Path $agent.DirectoryName 'fmrmm-indicator.exe'))) {
+        throw "fmrmm-indicator.exe nao encontrado no kit (precisa ficar junto do agente)."
+    }
 
     # ---- instala/atualiza o servico -----------------------------------------
     # O binario cria o servico FMRMMAgent (LocalSystem), a pasta de dados com

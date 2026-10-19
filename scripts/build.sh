@@ -13,6 +13,11 @@ for t in windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/amd64 darwin
   os=${t%/*}; arch=${t#*/}; ext=""; [[ $os == windows ]] && ext=".exe"
   CGO_ENABLED=0 GOOS=$os GOARCH=$arch $GO build -trimpath -ldflags "$LD" -o "$OUT/fmrmm-agent-$os-$arch$ext" ./cmd/fmrmm-agent
 done
+# helper do indicador (só Windows; subsistema GUI = sem janela de console).
+# O `fmrmm-agent install` exige fmrmm-indicator.exe na mesma pasta do instalador.
+for arch in amd64 arm64; do
+  CGO_ENABLED=0 GOOS=windows GOARCH=$arch $GO build -trimpath -ldflags "$LD -H=windowsgui" -o "$OUT/fmrmm-indicator-windows-$arch.exe" ./cmd/fmrmm-indicator
+done
 # servidor: Linux (produção) e Windows (laboratório)
 for t in linux/amd64 linux/arm64 windows/amd64; do
   os=${t%/*}; arch=${t#*/}; ext=""; [[ $os == windows ]] && ext=".exe"
