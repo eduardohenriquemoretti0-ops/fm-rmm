@@ -18,11 +18,17 @@ export const CABECALHO_CERIMONIA = 'X-FMRMM-Cerimonia';
 /** Erro de API com status HTTP e mensagem segura para exibir ao operador. */
 export class ErroApi extends Error {
   readonly status: number;
+  /**
+   * Código `erro` do servidor (ex.: `step_up_necessario`), só se casar com
+   * `^[a-z_]{1,48}$`. É um identificador de máquina; NUNCA é exibido cru.
+   */
+  readonly codigo: string | undefined;
 
-  constructor(status: number, mensagem: string) {
+  constructor(status: number, mensagem: string, codigo?: string) {
     super(mensagem);
     this.name = 'ErroApi';
     this.status = status;
+    this.codigo = codigo;
   }
 }
 
@@ -48,6 +54,16 @@ function mensagemPorStatus(status: number): string {
   if (status === 429) return 'Muitas tentativas. Aguarde antes de tentar de novo.';
   if (status >= 500) return 'Erro interno do servidor.';
   return `Falha na requisição (HTTP ${status}).`;
+}
+
+/** Extrai só o identificador `erro` do corpo de falha (sem ecoar texto do servidor). */
+async function codigoDeErro(resp: Response): Promise<string | undefined> {
+  try {
+    const j = (await resp.json()) as { erro?: unknown };
+    return typeof j.erro === 'string' && /^[a-z_]{1,48}$/.test(j.erro) ? j.erro : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface OpcoesChamada {
@@ -100,7 +116,7 @@ export async function chamarApi(caminho: string, op: OpcoesChamada = {}): Promis
   }
 
   if (!resp.ok) {
-    throw new ErroApi(resp.status, mensagemPorStatus(resp.status));
+    throw new ErroApi(resp.status, mensagemPorStatus(resp.status), await codigoDeErro(resp));
   }
   const tipo = resp.headers.get('content-type') ?? '';
   if (!tipo.includes('application/json')) {

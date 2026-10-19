@@ -1,9 +1,9 @@
 # Console web do FM-RMM — SPA (`web/`)
 
 SPA em React + TypeScript + Vite do console web. Escopo do T6 (scaffold):
-login WebAuthn, grid de agentes somente leitura e o ponto de extensão do botão
-"Conectar". **Não assina nada** — o autenticador WebCrypto é o T7 e a fila de
-ações é o T5.
+login WebAuthn, grid de agentes e (T7) o **autenticador de assinatura**: o
+operador assina grants/jobs NO NAVEGADOR com Ed25519 não exportável e o SPA envia
+a `POST /api/acoes`. O servidor não assina nada.
 
 Spec de segurança (lei): `docs/console-seguranca.md`. Plano de execução:
 `docs/console-handoff-agentes.md` (T6).
@@ -21,7 +21,7 @@ cd web
 npm ci                 # instala exatamente o package-lock.json
 npm run dev            # Vite em http://127.0.0.1:5173 (só para a UI)
 npm run typecheck      # tsc --noEmit
-npm test               # vitest (31 testes unitários, ambiente node)
+npm test               # vitest (56 testes, ambiente node)
 npm run build          # tsc + vite build + guarda de CSP -> web/dist/
 ```
 
@@ -108,18 +108,61 @@ Evidência no `dist/index.html` (única tag de script é externa):
 | POST | `/api/login/fim` | header `X-FMRMM-Cerimonia` + credencial WebAuthn (JSON base64url) | `{operador, csrf}` + cookie |
 | GET | `/api/sessao` | cookie | `{operador, nome, csrf}` ou 401 |
 | POST | `/api/logout` | cookie + `X-FMRMM-CSRF` | `{ok:true}` |
-| GET | `/api/agents` | cookie | `Agente[]` (filtrado por RBAC no servidor) |
+| GET | `/api/agentes` | cookie | `{agentes:[{id,hostname,os,status,grupo,online,ultimo_contato}]}` (RBAC no servidor) |
+| POST | `/api/acoes` | cookie + CSRF + step-up; `{tipo,payload,sig,key_id}` | 202 `{job|sessao, estado}` |
+| POST | `/api/operador/chave-assinatura` | cookie + CSRF + step-up; `{signing_pub,prova}` | 201 `{key_id}` |
+| POST | `/api/stepup/inicio` e `/fim` | **PENDENTE no backend** (ver abaixo) | como o login |
 
 Validação de forma em `src/api/endpoints.ts`. Tipos em `src/api/tipos.ts`.
 
-**Pendências de contrato (confirmar com o T4):**
+**Pendências de contrato (backend; o T7 não mexe em Go):**
 
-- Nome do caminho: o handoff usa `/api/agents`; o pedido original falava em
-  `/api/agentes`. O código usa `/api/agents` (constante `CAMINHO_AGENTES` em
-  `src/api/endpoints.ts`). Se o T4 fixar outro nome, troque só ali.
-- Campos do agente (`id`, `hostname`, `os`, `online`, `ultimo_contato`) são
-  **suposição** até o T4 publicar o JSON. Mudança de campo = editar
-  `src/api/tipos.ts` e o validador em `endpoints.ts`.
+1. **Rotas de step-up HTTP não existem.** `Autenticador.IniciaStepUp/FinalizaStepUp`
+   existem em `internal/console/webauthn.go`, mas `rotas.go` não as expõe. O SPA
+   assume `/api/stepup/inicio` e `/api/stepup/fim` (constantes em
+   `src/api/endpoints.ts`), espelhando `/api/login/*`. Sem elas, cadastro de chave
+   e ações recebem 403 `step_up_necessario`.
+2. **`/api/sessao` não devolve `tecnico` (TechName) nem `relay_url`.** O RemoteGrant
+   precisa dos dois (o servidor exige technician = TechName do operador e relay =
+   relay configurado). O SPA lê `tecnico` e `relay_url` OPCIONAIS da sessão; se
+   faltarem, o "Conectar" falha fechado sem enviar nada. O job de exemplo ("Coletar
+   info") não depende disso.
+3. Escape de `\b` e `\f`: o serializador emite `\b`/`\f` (Go >= 1.22); o doc só
+   cita `\u00XX`. Irrelevante no catálogo atual (só `[A-Za-z0-9._-]`), mas confirmar
+   com um vetor Go que contenha esses controles se um dia entrarem em campos livres.
+
+## Assinatura de ações (T7)
+
+Código: `src/auth/canonico.ts` (bytes canônicos), `src/auth/assinatura.ts`
+(autenticador), `src/auth/armazem.ts` (IndexedDB), `src/auth/stepup.ts`,
+`src/acoes/{executar,conectar}.ts`. Lei: `docs/console-assinatura-acao.md`.
+
+- Chave: `crypto.subtle.generateKey({name:'Ed25519'}, false, ['sign','verify'])`.
+  A privada é `extractable:false` e é guardada no IndexedDB por structured clone
+  (os bytes nunca passam pelo JS). Nada de lib JS de Ed25519 como fallback.
+- Fluxo: bytes canônicos (idênticos ao `json.Marshal` do Go) -> re-serializa e
+  confere igual -> `h1 = SHA-256` -> step-up WebAuthn -> o autenticador recomputa
+  `h1'` e aborta se divergir -> assina os bytes -> **verifica a assinatura na volta**
+  -> `POST /api/acoes` com `payload`/`sig` em base64 dos BYTES.
+- Cadastro: botão "Cadastrar chave de assinatura" (step-up, gera, grava, assina a
+  prova `fmrmm-signing-pub-v1\n<op>\n<pub>` e registra). Se o registro falhar, a
+  chave local é descartada. Trocar chave é com o admin (servidor devolve 409).
+- Testes (`src/auth/assinatura.test.ts`) importam a **seed do vetor do doc**
+  (chave extraível SÓ no teste) e conferem byte a byte bytes, SHA-256, assinatura e
+  `key_id` de job e grant, e a prova de posse.
+
+### Suporte a Ed25519 no WebCrypto
+
+Ed25519 no `SubtleCrypto` (algoritmo `"Ed25519"`) existe em: Chrome/Edge 137+,
+Firefox 129+, Safari 17+ (Safari 16.4 com flag). Navegadores mais antigos lançam
+`NotSupportedError` em `generateKey`. O SPA faz feature-detect
+(`ed25519Disponivel()`), e sem suporte **para** com a mensagem
+"Este navegador não suporta Ed25519 no WebCrypto" — não há fallback.
+
+Se faltar: atualize o navegador (não há outra via segura). **Não** troque por
+biblioteca JS que gere/exporte a chave: isso quebra a premissa de chave não
+exportável. Contexto seguro (HTTPS) também é obrigatório. No Node 18 (testes) o
+Ed25519 existe como experimental e os testes rodam com ele.
 
 ## Servir o build atrás do backend
 
@@ -191,13 +234,12 @@ web/
     │   ├── filtro.ts       busca e formatação de data (puros)
     │   └── *.test.ts(x)
     └── acoes/
-        └── conectar.ts     STUB do "Conectar" (ponto de extensão T5/T7)
+        ├── conectar.ts     "Conectar" (grant) e job de exemplo -> autenticador
+        └── executar.ts     step-up -> assina -> POST /api/acoes
 ```
 
 ## Fora deste escopo (próximos tickets)
 
-- **T5**: `POST /api/acoes` e payload canônico. O stub de `conectar.ts` é o ponto de entrada.
-- **T7**: autenticador WebCrypto (chave Ed25519 não exportável, step-up).
-- Colunas do handoff ainda não exibidas (nº de vulnerabilidades, updates
-  pendentes, saúde): entram quando o T4 expuser os campos.
-- Step-up WebAuthn antes de ações sensíveis (T2/T7).
+- Rotas HTTP de step-up e `tecnico`/`relay_url` em `/api/sessao` (backend, ver pendências).
+- Colunas do handoff ainda não exibidas (nº de vulnerabilidades, updates pendentes, saúde).
+- Validação ponta a ponta com o backend real e autenticador FIDO2 físico (T8, VM).

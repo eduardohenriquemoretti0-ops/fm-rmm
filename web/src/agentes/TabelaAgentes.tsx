@@ -9,9 +9,11 @@ import { formatarUltimoContato } from './filtro';
 export function TabelaAgentes({
   agentes,
   aoConectar,
+  aoEnviarInfo,
 }: {
   readonly agentes: ReadonlyArray<Agente>;
   readonly aoConectar: (agente: Agente) => void;
+  readonly aoEnviarInfo?: (agente: Agente) => void;
 }) {
   return (
     <div className="tabela-rolagem">
@@ -21,7 +23,9 @@ export function TabelaAgentes({
             <th scope="col">ID</th>
             <th scope="col">Hostname</th>
             <th scope="col">SO</th>
+            <th scope="col">Grupo</th>
             <th scope="col">Status</th>
+            <th scope="col">Conexão</th>
             <th scope="col">Último contato</th>
             <th scope="col">Ação</th>
           </tr>
@@ -32,12 +36,19 @@ export function TabelaAgentes({
               <td>{a.id}</td>
               <td>{a.hostname}</td>
               <td>{a.os}</td>
+              <td>{a.grupo}</td>
+              <td>{a.status}</td>
               <td>{a.online ? 'Online' : 'Offline'}</td>
               <td>{formatarUltimoContato(a.ultimo_contato)}</td>
               <td>
                 <button type="button" data-modo="view" onClick={() => aoConectar(a)}>
                   Conectar
                 </button>
+                {aoEnviarInfo !== undefined && (
+                  <button type="button" data-acao="info" onClick={() => aoEnviarInfo(a)}>
+                    Coletar info
+                  </button>
+                )}
               </td>
             </tr>
           ))}

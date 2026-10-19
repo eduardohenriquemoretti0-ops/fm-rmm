@@ -52,12 +52,12 @@ const cspDe = (page) => page.evaluate(() => window.__csp);
   const { ctx, page, erros } = await novaPagina();
   let headerLogout = null, headerAgentes = null;
   await page.route('**/api/sessao', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ operador: 'op-a', nome: 'Ana', csrf: 'csrf-123' }) }));
-  await page.route('**/api/agents', async (r) => {
+  await page.route('**/api/agentes', async (r) => {
     headerAgentes = r.request().headers()['x-fmrmm-csrf'] ?? null;
-    await r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
-      { id: 'ag-01', hostname: 'SRV-Jundiai', os: 'Windows 10', online: true, ultimo_contato: '2026-10-18T12:00:00Z' },
-      { id: '<img src=x onerror=alert(1)>', hostname: '<svg onload=alert(2)>', os: '"><script>alert(3)</script>', online: false, ultimo_contato: null },
-    ]) });
+    await r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ agentes: [
+      { id: 'ag-01', hostname: 'SRV-Jundiai', os: 'Windows 10', status: 'aprovado', grupo: 'g1', online: true, ultimo_contato: '2026-10-18T12:00:00Z' },
+      { id: '<img src=x onerror=alert(1)>', hostname: '<svg onload=alert(2)>', os: '"><script>alert(3)</script>', status: 'aprovado', grupo: 'g1', online: false, ultimo_contato: null },
+    ] }) });
   });
   await page.route('**/api/logout', async (r) => {
     headerLogout = r.request().headers()['x-fmrmm-csrf'] ?? null;
@@ -71,7 +71,7 @@ const cspDe = (page) => page.evaluate(() => window.__csp);
   check('C2 dado hostil aparece como texto literal', textoHostil.includes('<svg onload=alert(2)>') && textoHostil.includes('<img src=x onerror=alert(1)>'));
   const injetado = await page.evaluate(() => document.querySelectorAll('img[src="x"], svg[onload], script:not([src]):not([type])').length);
   check('C2 nenhum elemento injetado pelo dado do agente', injetado === 0, `injetados=${injetado}`);
-  check('C2 GET /api/agents não envia CSRF', headerAgentes === null, `header=${headerAgentes}`);
+  check('C2 GET /api/agentes não envia CSRF', headerAgentes === null, `header=${headerAgentes}`);
   // Busca
   await page.getByRole('searchbox', { name: 'Buscar agentes' }).fill('jundiai');
   check('C2 busca filtra para 1 linha', (await page.locator('tbody tr').count()) === 1);
@@ -124,7 +124,7 @@ const cspDe = (page) => page.evaluate(() => window.__csp);
     sessaoAtiva = true;
     await r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ operador: 'op-a', csrf: 'csrf-login' }) });
   });
-  await page.route('**/api/agents', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/agentes', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: '{"agentes":[]}' }));
 
   await page.goto('/');
   await page.getByRole('button', { name: 'Entrar com chave de segurança' }).click();

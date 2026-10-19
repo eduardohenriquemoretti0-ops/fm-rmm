@@ -52,7 +52,7 @@ describe('cliente HTTP', () => {
     const h2 = (fetchMock.mock.calls[1]?.[1] as RequestInit).headers as Headers;
     expect(h2.get(CABECALHO_CSRF)).toBe('token-em-memoria');
 
-    await chamarApi('/api/agents');
+    await chamarApi('/api/agentes');
     const h3 = (fetchMock.mock.calls[2]?.[1] as RequestInit).headers as Headers;
     expect(h3.get(CABECALHO_CSRF)).toBeNull();
   });
@@ -72,7 +72,7 @@ describe('cliente HTTP', () => {
         headers: { 'Content-Type': 'text/plain' },
       }),
     );
-    const erro = await chamarApi('/api/agents').catch((e: unknown) => e);
+    const erro = await chamarApi('/api/agentes').catch((e: unknown) => e);
     expect(erro).toBeInstanceOf(ErroApi);
     expect((erro as ErroApi).status).toBe(500);
     expect((erro as ErroApi).message).not.toContain('senha');

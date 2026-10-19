@@ -16,11 +16,19 @@ import {
 } from 'react';
 import { ErroApi, definirCsrf } from '../api/cliente';
 import { lerSessao, sair as sairApi } from '../api/endpoints';
+import type { RespostaSessao } from '../api/tipos';
 
 export type EstadoSessao =
   | { readonly fase: 'carregando' }
   | { readonly fase: 'anonimo'; readonly aviso?: string }
-  | { readonly fase: 'autenticado'; readonly operador: string; readonly nome: string };
+  | {
+      readonly fase: 'autenticado';
+      readonly operador: string;
+      readonly nome: string;
+      /** TechName e relay do servidor (opcionais até o backend expô-los). */
+      readonly tecnico?: string;
+      readonly relayUrl?: string;
+    };
 
 export interface ValorSessao {
   readonly estado: EstadoSessao;
@@ -34,6 +42,16 @@ export interface ValorSessao {
 
 const ContextoSessao = createContext<ValorSessao | null>(null);
 
+function autenticado(s: RespostaSessao): EstadoSessao {
+  return {
+    fase: 'autenticado',
+    operador: s.operador,
+    nome: s.nome,
+    ...(s.tecnico !== undefined ? { tecnico: s.tecnico } : {}),
+    ...(s.relay_url !== undefined ? { relayUrl: s.relay_url } : {}),
+  };
+}
+
 export function ProvedorSessao({ children }: { readonly children: ReactNode }) {
   const [estado, setEstado] = useState<EstadoSessao>({ fase: 'carregando' });
 
@@ -44,7 +62,7 @@ export function ProvedorSessao({ children }: { readonly children: ReactNode }) {
       .then((s) => {
         if (cancelado) return;
         definirCsrf(s.csrf);
-        setEstado({ fase: 'autenticado', operador: s.operador, nome: s.nome });
+        setEstado(autenticado(s));
       })
       .catch((erro: unknown) => {
         if (cancelado) return;
@@ -65,7 +83,7 @@ export function ProvedorSessao({ children }: { readonly children: ReactNode }) {
     try {
       const s = await lerSessao();
       definirCsrf(s.csrf);
-      setEstado({ fase: 'autenticado', operador: s.operador, nome: s.nome });
+      setEstado(autenticado(s));
     } catch {
       definirCsrf(null);
       setEstado({ fase: 'anonimo', aviso: 'Sessão não confirmada pelo servidor.' });

@@ -10,17 +10,17 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe('validação de contrato', () => {
   it('listarAgentes aceita lista bem formada', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json([{ id: 'a', hostname: 'h', os: 'o', online: true, ultimo_contato: null }])));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ agentes: [{ id: 'a', hostname: 'h', os: 'o', status: 'aprovado', grupo: 'g', online: true, ultimo_contato: null }] })));
     await expect(listarAgentes()).resolves.toHaveLength(1);
   });
 
   it('listarAgentes recusa item com tipo errado', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json([{ id: 'a', hostname: 'h', os: 'o', online: 'sim', ultimo_contato: null }])));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ agentes: [{ id: 'a', hostname: 'h', os: 'o', status: 'aprovado', grupo: 'g', online: 'sim', ultimo_contato: null }] })));
     await expect(listarAgentes()).rejects.toBeInstanceOf(ErroApi);
   });
 
-  it('listarAgentes recusa objeto no lugar de lista', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ itens: [] })));
+  it('listarAgentes recusa lista pura (o T4 devolve {agentes:[...]})', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json([])));
     await expect(listarAgentes()).rejects.toBeInstanceOf(ErroApi);
   });
 
@@ -34,11 +34,11 @@ describe('validação de contrato', () => {
     await expect(iniciarLogin()).rejects.toBeInstanceOf(ErroApi);
   });
 
-  it('listarAgentes usa GET em /api/agents (contrato do handoff T4)', async () => {
-    const f = vi.fn().mockResolvedValue(json([]));
+  it('listarAgentes usa GET em /api/agentes (rota real do T4)', async () => {
+    const f = vi.fn().mockResolvedValue(json({ agentes: [] }));
     vi.stubGlobal('fetch', f);
     await listarAgentes();
-    expect(f.mock.calls[0]?.[0]).toBe('/api/agents');
+    expect(f.mock.calls[0]?.[0]).toBe('/api/agentes');
     expect((f.mock.calls[0]?.[1] as RequestInit).method).toBe('GET');
   });
 });

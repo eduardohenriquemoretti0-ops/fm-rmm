@@ -7,15 +7,15 @@ import type {
   Agente,
   OpcoesAsercaoJSON,
   RespostaLoginFim,
+  RespostaAcao,
+  RespostaChave,
   RespostaLoginInicio,
   RespostaSessao,
 } from './tipos';
+import type { AcaoAssinada, RegistroChave } from '../auth/assinatura';
 
-/**
- * Caminho da lista de agentes. A spec do handoff (T4) usa `/api/agents`
- * (docs/console-handoff-agentes.md). Mudar aqui se o T4 fixar outro nome.
- */
-export const CAMINHO_AGENTES = '/api/agents';
+/** Caminho da lista de agentes (T4: internal/console/rotas.go). */
+export const CAMINHO_AGENTES = '/api/agentes';
 
 type Registro = Record<string, unknown>;
 
@@ -37,7 +37,14 @@ function ehOpcoesAsercao(x: unknown): x is OpcoesAsercaoJSON {
 }
 
 function ehRespostaSessao(x: unknown): x is RespostaSessao {
-  return ehRegistro(x) && ehTexto(x.operador) && ehTexto(x.nome) && ehTexto(x.csrf);
+  return (
+    ehRegistro(x) &&
+    ehTexto(x.operador) &&
+    ehTexto(x.nome) &&
+    ehTexto(x.csrf) &&
+    (x.tecnico === undefined || ehTexto(x.tecnico)) &&
+    (x.relay_url === undefined || ehTexto(x.relay_url))
+  );
 }
 
 function ehAgente(x: unknown): x is Agente {
@@ -46,6 +53,8 @@ function ehAgente(x: unknown): x is Agente {
     ehTexto(x.id) &&
     ehTexto(x.hostname) &&
     ehTexto(x.os) &&
+    ehTexto(x.status) &&
+    ehTexto(x.grupo) &&
     typeof x.online === 'boolean' &&
     (x.ultimo_contato === null || ehTexto(x.ultimo_contato))
   );
@@ -91,9 +100,52 @@ export async function sair(): Promise<void> {
   await chamarApi('/api/logout', { metodo: 'POST' });
 }
 
-/** GET /api/agents — lista de agentes já filtrada por RBAC no servidor. */
+/** GET /api/agentes — `{agentes:[...]}` já filtrado por RBAC no servidor. */
 export async function listarAgentes(signal?: AbortSignal): Promise<Agente[]> {
   const r = await chamarApi(CAMINHO_AGENTES, signal ? { signal } : {});
-  if (!Array.isArray(r) || !r.every(ehAgente)) throw formaInvalida();
-  return r;
+  if (!ehRegistro(r) || !Array.isArray(r.agentes) || !r.agentes.every(ehAgente)) {
+    throw formaInvalida();
+  }
+  return r.agentes;
+}
+
+/**
+ * POST /api/acoes — envia a ação JÁ ASSINADA ({tipo,payload,sig,key_id}). O
+ * payload é o base64 dos BYTES canônicos (nunca o objeto). 202 = enfileirada.
+ */
+export async function enviarAcao(acao: AcaoAssinada): Promise<RespostaAcao> {
+  const r = await chamarApi('/api/acoes', { metodo: 'POST', corpo: acao });
+  if (!ehRegistro(r) || !ehTexto(r.estado)) throw formaInvalida();
+  return {
+    estado: r.estado,
+    ...(ehTexto(r.job) ? { job: r.job } : {}),
+    ...(ehTexto(r.sessao) ? { sessao: r.sessao } : {}),
+  };
+}
+
+/** POST /api/operador/chave-assinatura — registra a pública + prova de posse. */
+export async function registrarChaveAssinatura(corpo: RegistroChave): Promise<RespostaChave> {
+  const r = await chamarApi('/api/operador/chave-assinatura', { metodo: 'POST', corpo });
+  if (!ehRegistro(r) || !ehTexto(r.key_id)) throw formaInvalida();
+  return { key_id: r.key_id };
+}
+
+/**
+ * Step-up WebAuthn (re-toque). ATENÇÃO: o backend tem Autenticador.IniciaStepUp /
+ * FinalizaStepUp, mas ainda NÃO expõe rota HTTP (rotas.go). Os caminhos abaixo são
+ * a convenção espelhada de /api/login/*; ajustar aqui quando o backend publicar.
+ */
+export const CAMINHO_STEPUP_INICIO = '/api/stepup/inicio';
+export const CAMINHO_STEPUP_FIM = '/api/stepup/fim';
+
+export async function iniciarStepUp(): Promise<RespostaLoginInicio> {
+  const r = await chamarApi(CAMINHO_STEPUP_INICIO, { metodo: 'POST' });
+  if (!ehRegistro(r) || !ehTexto(r.cerimonia) || !ehOpcoesAsercao(r.opcoes)) {
+    throw formaInvalida();
+  }
+  return { cerimonia: r.cerimonia, opcoes: r.opcoes };
+}
+
+export async function finalizarStepUp(cerimonia: string, credencial: unknown): Promise<void> {
+  await chamarApi(CAMINHO_STEPUP_FIM, { metodo: 'POST', cerimonia, corpo: credencial });
 }

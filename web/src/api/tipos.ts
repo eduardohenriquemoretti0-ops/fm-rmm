@@ -1,8 +1,8 @@
 /**
  * Tipos do contrato da API do console (ver docs/console-handoff-agentes.md).
  *
- * Os campos de /api/agents ainda não são definitivos: o T4 (backend) fixa o JSON.
- * Qualquer campo novo ou renomeado entra aqui — e só aqui.
+ * Campos de /api/agentes alinhados ao JSON real do T4 (internal/console/agentes.go,
+ * `agenteView`). Qualquer campo novo ou renomeado entra aqui — e só aqui.
  */
 
 /** Resposta de POST /api/login/fim: o token de sessão vai só no cookie HttpOnly. */
@@ -40,6 +40,13 @@ export interface RespostaSessao {
   readonly operador: string;
   readonly nome: string;
   readonly csrf: string;
+  /**
+   * OPCIONAIS — o servidor (T3) ainda NÃO os devolve. Necessários para montar o
+   * RemoteGrant: `tecnico` = TechName do operador; `relay_url` = relay configurado
+   * no servidor. Sem eles o "Conectar" falha fechado (ver acoes/conectar.ts).
+   */
+  readonly tecnico?: string;
+  readonly relay_url?: string;
 }
 
 /** Agente como exibido no grid (somente leitura). */
@@ -47,7 +54,22 @@ export interface Agente {
   readonly id: string;
   readonly hostname: string;
   readonly os: string;
+  /** Estado de aprovação/ciclo de vida do agente (ex.: aprovado, pendente). */
+  readonly status: string;
+  readonly grupo: string;
   readonly online: boolean;
-  /** Instante ISO 8601 do último contato, ou null se nunca contatou. */
+  /** Instante RFC 3339 UTC do último contato, ou null se nunca contatou. */
   readonly ultimo_contato: string | null;
+}
+
+/** Resposta de POST /api/acoes (202). */
+export interface RespostaAcao {
+  readonly job?: string;
+  readonly sessao?: string;
+  readonly estado: string;
+}
+
+/** Resposta de POST /api/operador/chave-assinatura (201). */
+export interface RespostaChave {
+  readonly key_id: string;
 }

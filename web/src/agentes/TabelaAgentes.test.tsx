@@ -9,6 +9,8 @@ const hostil: Agente = {
   id: '<script>alert(1)</script>',
   hostname: '<img src=x onerror=alert(2)>',
   os: '"><svg onload=alert(3)>',
+  status: 'aprovado',
+  grupo: '<b onclick=alert(5)>',
   online: true,
   ultimo_contato: 'javascript:alert(4)',
 };
@@ -22,6 +24,7 @@ describe('TabelaAgentes — escape automático', () => {
     expect(html).toContain('&lt;img src=x onerror=alert(2)&gt;');
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(html).toContain('&quot;&gt;&lt;svg onload=alert(3)&gt;');
+    expect(html).toContain('&lt;b onclick=alert(5)&gt;');
   });
 
   it('não gera nenhum elemento a partir do dado do agente', () => {
