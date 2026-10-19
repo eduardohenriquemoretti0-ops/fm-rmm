@@ -1,6 +1,12 @@
 package server
 
 import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/x509"
+	"encoding/pem"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -145,5 +151,87 @@ func TestOperatorsListaFlags(t *testing.T) {
 	}
 	if ops[0].CertThumbprint != "" || ops[1].CertThumbprint == "" || ops[0].SigningPub != "" {
 		t.Fatalf("flags: %+v", ops)
+	}
+}
+
+// Fluxo de produção: CSR na máquina do operador, assinatura no admin.
+func TestAssinarCSROperador(t *testing.T) {
+	dir, st := montaServidor(t)
+	if err := st.CreateOperator(Operator{ID: "op-1", Nome: "Maria", TechName: "joao"}); err != nil {
+		t.Fatal(err)
+	}
+	maquinaOp := filepath.Join(t.TempDir(), "op")
+	keyP, csrP, err := GerarCSROperador("Maria", maquinaOp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(keyP); fi.Mode().Perm() != 0o600 {
+		t.Errorf("operador.key com perm %v, quer 0600", fi.Mode().Perm())
+	}
+	if _, _, err := GerarCSROperador("Maria", maquinaOp); err == nil {
+		t.Error("GerarCSROperador sobrescreveu arquivos")
+	}
+	saida := filepath.Join(t.TempDir(), "saida")
+	thumb, cert, err := AssinarCSROperador(st, dir, "op-1", csrP, saida, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pki.EhOperador(cert) || cert.Subject.CommonName != "op-1" {
+		t.Errorf("perfil errado: %v", cert.Subject)
+	}
+	ca, err := pki.LoadCert(filepath.Join(dir, FileCA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	if _, err := cert.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+		t.Fatalf("cadeia: %v", err)
+	}
+	// o cert emitido corresponde à chave do operador (nunca vista pelo servidor)
+	keyDER, _ := os.ReadFile(keyP)
+	blk, _ := pem.Decode(keyDER)
+	priv, err := x509.ParsePKCS8PrivateKey(blk.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !priv.(*ecdsa.PrivateKey).PublicKey.Equal(cert.PublicKey) {
+		t.Error("cert não corresponde à chave do operador")
+	}
+	op, _ := st.GetOperator("op-1")
+	if op.CertThumbprint != thumb || thumb != ThumbprintCert(cert) {
+		t.Errorf("thumbprint gravado %q != %q", op.CertThumbprint, thumb)
+	}
+	// lado servidor: nenhum artefato contém chave privada
+	for _, d := range []string{saida, dir} {
+		filepath.WalkDir(d, func(p string, e fs.DirEntry, _ error) error {
+			if e.IsDir() || filepath.Base(p) == FileCAKey {
+				return nil
+			}
+			b, _ := os.ReadFile(p)
+			if bytes.Contains(b, []byte("PRIVATE KEY")) || bytes.Contains(b, blk.Bytes[len(blk.Bytes)-32:]) {
+				t.Errorf("chave privada em artefato do servidor: %s", p)
+			}
+			return nil
+		})
+	}
+	if _, err := os.Stat(filepath.Join(saida, FileOperadorKey)); err == nil {
+		t.Error("operador.key apareceu no lado servidor")
+	}
+	// segunda emissão recusada sem --reemitir; com reemitir passa em dir novo
+	if _, _, err := AssinarCSROperador(st, dir, "op-1", csrP, filepath.Join(t.TempDir(), "x"), false); err == nil {
+		t.Error("deveria recusar operador que já tem cert")
+	}
+	if _, _, err := AssinarCSROperador(st, dir, "op-1", csrP, filepath.Join(t.TempDir(), "y"), true); err != nil {
+		t.Errorf("reemitir: %v", err)
+	}
+	// CSR inválido
+	ruim := filepath.Join(t.TempDir(), "ruim.csr")
+	os.WriteFile(ruim, []byte("lixo"), 0o644)
+	if err := st.CreateOperator(Operator{ID: "op-2", Nome: "B", TechName: "joao"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := AssinarCSROperador(st, dir, "op-2", ruim, filepath.Join(t.TempDir(), "z"), false); err == nil {
+		t.Error("CSR inválido aceito")
 	}
 }

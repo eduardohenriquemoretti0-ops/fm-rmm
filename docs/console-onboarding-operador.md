@@ -35,22 +35,32 @@ fmrmm-server operadores create --dir D --tech joao --nome "Maria Silva" [--displ
 # imprime o id: op-xxxxxxxxxxxxxxxx   (anote como OPID)
 ```
 
-## 3. Emitir o cert de cliente (mTLS) e importar no navegador
-```bash
-fmrmm-server operadores cert --dir D --id OPID --out ./cert-OPID
-# grava operador.key (0600), operador.crt e ca.crt; registra o thumbprint no operador
-openssl pkcs12 -export -inkey ./cert-OPID/operador.key -in ./cert-OPID/operador.crt \
-  -certfile ./cert-OPID/ca.crt -out operador.p12        # pede uma senha de exportação
-```
-Importe `operador.p12` no navegador (Configurações > Certificados > Seus
-certificados) e `ca.crt` como autoridade confiável, para o navegador confiar no
-servidor do console. Depois **apague** `operador.key` e o `.p12` do disco do
-servidor/admin (entregue por canal seguro).
+## 3. Emitir o cert de cliente (mTLS) por CSR (PRODUÇÃO) e importar no navegador
+A chave privada do operador **nunca sai da máquina dele**.
 
-> **Modo direto = só lab.** `operadores cert` gera a chave privada no servidor.
-> Em **produção o ideal é CSR gerado na máquina do operador** (a privada nunca
-> sai de lá) e o admin só assinar com `pki.SignOperator` — ainda sem subcomando
-> próprio para isso. Reemitir (`--reemitir`) invalida o cert anterior.
+```bash
+# (a) NA MÁQUINA DO OPERADOR (basta o binário fmrmm-server; não precisa de --dir):
+fmrmm-server operadores csr --nome "Maria Silva" --out ./meu-cert
+#   grava operador.key (0600, FICA AQUI) e operador.csr -> envie SÓ o operador.csr ao admin
+
+# (b) NO SERVIDOR/ADMIN (recebeu operador.csr):
+fmrmm-server operadores assinar-csr --dir D --id OPID --csr operador.csr --out ./cert-OPID
+#   valida o CSR (assinatura, P-256/Ed25519), emite operador.crt + ca.crt, registra o thumbprint.
+#   Recusa se o operador já tem cert (use --reemitir; invalida o anterior).
+#   Devolva operador.crt e ca.crt (públicos) ao operador.
+
+# (c) NA MÁQUINA DO OPERADOR, com a operador.key local:
+openssl pkcs12 -export -inkey ./meu-cert/operador.key -in operador.crt \
+  -certfile ca.crt -out operador.p12        # pede uma senha de exportação
+```
+O CN do CSR é ignorado: o servidor impõe o id do operador e o perfil de operador
+no cert. Importe `operador.p12` no navegador (Configurações > Certificados >
+Seus certificados) e `ca.crt` como autoridade confiável. Depois apague o `.p12`
+(a `operador.key` fica só na máquina do operador, protegida).
+
+> **`operadores cert` (modo direto) é SÓ PARA LAB.** Ele gera a chave privada no
+> servidor e a grava em disco para entrega; não use em produção. Reemitir
+> (`--reemitir`, em ambos os modos) invalida o cert anterior.
 
 Subir o console (se ainda não está no ar):
 ```bash
@@ -107,4 +117,4 @@ operador. Teste: o operador cria uma ação de baixo risco no console e confira
 - Perdeu as duas chaves ou a chave de assinatura: re-provisionamento pelo admin,
   fora de banda (novo operador ou intervenção no banco); não existe recuperação por e-mail/SMS.
 - Toda etapa do admin é registrada na auditoria encadeada
-  (`operador.criado`, `operador.cert.emitido`, `operador.ativado`).
+  (`operador.criado`, `operador.cert.emitido` (campo `modo`: csr), `operador.ativado`).

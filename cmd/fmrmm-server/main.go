@@ -61,7 +61,10 @@ Operação:
   audit    --dir D verify | list [--tail 50]
 Operadores do console (ver docs/console-onboarding-operador.md):
   operadores create --dir D --tech TECNICO --nome N [--display X]   cria (status pendente); imprime o id
-  operadores cert   --dir D --id OPID --out DIR [--reemitir]        gera chave+cert de cliente (modo direto, LAB) e liga o thumbprint
+  operadores csr    --nome N --out DIR                      MÁQUINA DO OPERADOR: gera operador.key (0600, fica aqui) + operador.csr
+  operadores assinar-csr --dir D --id OPID --csr operador.csr --out DIR [--reemitir]
+                                                           PRODUÇÃO: valida o CSR, emite operador.crt + ca.crt e liga o thumbprint
+  operadores cert   --dir D --id OPID --out DIR [--reemitir]        SÓ LAB: gera a chave NO servidor + cert (não use em produção)
   operadores list   --dir D                                         id, técnico, status, tem_cert, credenciais, tem_signing_pub
   operadores activate --dir D --id OPID                             ativa (exige cert e 2 credenciais WebAuthn)
 Lista de signers (trust-set dos agentes; a RAIZ fica OFFLINE):
@@ -1113,7 +1116,7 @@ func cmdCatalog() {
 // O grupo/acesso do operador é o do técnico ao qual ele está ligado.
 func cmdOperadores(args []string) error {
 	if len(args) == 0 {
-		return errors.New("uso: operadores create|cert|list|activate")
+		return errors.New("uso: operadores create|csr|assinar-csr|cert|list|activate")
 	}
 	sub, rest := args[0], args[1:]
 	fs := flag.NewFlagSet("operadores "+sub, flag.ExitOnError)
@@ -1124,13 +1127,37 @@ func cmdOperadores(args []string) error {
 	id := fs.String("id", "", "id do operador (cert/activate)")
 	out := fs.String("out", "", "diretório de saída do cert (cert)")
 	reemitir := fs.Bool("reemitir", false, "cert: reemite mesmo já havendo cert (invalida o anterior)")
+	csrArq := fs.String("csr", "", "arquivo CSR do operador (assinar-csr)")
 	fs.Parse(rest)
+	if sub == "csr" { // roda na máquina do operador: não toca no banco/CA
+		if *nome == "" || *out == "" {
+			return errors.New("informe --nome e --out")
+		}
+		keyP, csrP, err := server.GerarCSROperador(*nome, *out)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("chave privada: %s (0600; NUNCA envie; fica só nesta máquina)\nCSR: %s (envie ao admin)\n", keyP, csrP)
+		return nil
+	}
 	st, err := openStore(*dir)
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 	switch sub {
+	case "assinar-csr":
+		if *id == "" || *out == "" || *csrArq == "" {
+			return errors.New("informe --id, --csr e --out")
+		}
+		thumb, cert, err := server.AssinarCSROperador(st, *dir, *id, *csrArq, *out, *reemitir)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("operador %s: cert emitido por CSR (válido até %s)\nthumbprint: %s\narquivos em %s: %s, %s\n",
+			*id, cert.NotAfter.Format(time.DateOnly), thumb, *out, server.FileOperadorCrt, server.FileOperadorCA)
+		fmt.Println("Devolva operador.crt e ca.crt ao operador; ele monta o .p12 com a SUA operador.key.")
+		return st.Audit("operador.cert.emitido", actor(), map[string]any{"operador": *id, "thumbprint": thumb, "modo": "csr"})
 	case "create":
 		if *tech == "" || *nome == "" {
 			return errors.New("informe --tech e --nome")
@@ -1159,7 +1186,7 @@ func cmdOperadores(args []string) error {
 			*id, cert.NotAfter.Format(time.DateOnly), thumb, *out, server.FileOperadorKey, server.FileOperadorCrt, server.FileOperadorCA)
 		fmt.Printf("importar no navegador (.p12): openssl pkcs12 -export -inkey %s -in %s -certfile %s -out operador.p12\n",
 			filepath.Join(*out, server.FileOperadorKey), filepath.Join(*out, server.FileOperadorCrt), filepath.Join(*out, server.FileOperadorCA))
-		fmt.Println("ATENÇÃO: modo direto (lab) - a chave privada foi gerada aqui; entregue por canal seguro e apague as cópias.")
+		fmt.Println("ATENÇÃO: modo direto (SÓ LAB, não use em produção; prefira csr + assinar-csr) - a chave privada foi gerada aqui; entregue por canal seguro e apague as cópias.")
 		return st.Audit("operador.cert.emitido", actor(), map[string]any{"operador": *id, "thumbprint": thumb})
 	case "list":
 		ops, err := st.Operators()
