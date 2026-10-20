@@ -542,3 +542,67 @@ func TestAcaoSemListaPublicadaRecusado(t *testing.T) {
 	rec := ca.envia(t, "/api/acoes", ca.corpoJob(t, ca.job("job-n2bbbb01", c.ag1)))
 	ca.exigeCodigo(t, rec, http.StatusForbidden, "operador_nao_publicado")
 }
+
+// wipe pelo console: step-up + confirmação WIPE-<agente>; nada é enfileirado
+// fora do caminho completo e a intenção é auditada (sem segredo).
+func (c *cenarioAcao) wipe(id, agente string, params map[string]string) proto.JobPayload {
+	p := c.job(id, agente)
+	p.Action, p.Params = "wipe_remoto", params
+	return p
+}
+
+func TestWipeNoConsoleGate(t *testing.T) {
+	c := novoCenarioAcao(t)
+	ok := map[string]string{"motivo": "roubo", "confirmacao": "WIPE-" + c.ag1}
+
+	// sem step-up
+	c.exigeCodigo(t, c.envia(t, "/api/acoes", c.corpoJob(t, c.wipe("job-w0001aaa", c.ag1, ok))), 403, "step_up_necessario")
+	c.stepUp(t)
+	// sem confirmação / errada (de outro agente) / sem motivo: recusados
+	c.exigeCodigo(t, c.envia(t, "/api/acoes", c.corpoJob(t, c.wipe("job-w0002aaa", c.ag1, map[string]string{"motivo": "roubo"}))), 422, "acao_fora_do_catalogo")
+	c.exigeCodigo(t, c.envia(t, "/api/acoes", c.corpoJob(t, c.wipe("job-w0003aaa", c.ag1, map[string]string{"motivo": "roubo", "confirmacao": "WIPE-ag-ffffffffffffffff"}))), 422, "confirmacao_destrutiva_invalida")
+	c.exigeCodigo(t, c.envia(t, "/api/acoes", c.corpoJob(t, c.wipe("job-w0004aaa", c.ag1, map[string]string{"confirmacao": "WIPE-" + c.ag1}))), 422, "acao_fora_do_catalogo")
+	if j, _ := c.fila(t, c.ag1); j != 0 {
+		t.Fatalf("enfileirou wipe fora do caminho completo: %d", j)
+	}
+	ents, _ := c.a.f.st.AuditEntries()
+	for _, e := range ents {
+		if e.Event == "console.acao.destrutiva" {
+			t.Fatal("auditou destrutiva de pedido recusado")
+		}
+	}
+
+	// caminho completo
+	rec := c.envia(t, "/api/acoes", c.corpoJob(t, c.wipe("job-w0005aaa", c.ag1, ok)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("wipe completo: %d %s", rec.Code, rec.Body.String())
+	}
+	if j, _ := c.fila(t, c.ag1); j != 1 {
+		t.Fatalf("fila = %d", j)
+	}
+	ents, _ = c.a.f.st.AuditEntries()
+	achou := false
+	for _, e := range ents {
+		if e.Event == "console.acao.destrutiva" && e.Actor == "op-a" {
+			achou = true
+			s := string(e.Data)
+			if !strings.Contains(s, c.ag1) || !strings.Contains(s, "roubo") || strings.Contains(s, "confirmacao") {
+				t.Fatalf("auditoria destrutiva incompleta ou com campo indevido: %s", s)
+			}
+		}
+	}
+	if !achou {
+		t.Fatal("console.acao.destrutiva não auditada")
+	}
+}
+
+func TestLockNoConsoleExigeStepUpEEnfileira(t *testing.T) {
+	c := novoCenarioAcao(t)
+	p := c.job("job-l0001aaa", c.ag1)
+	p.Action = "lock_remoto"
+	c.exigeCodigo(t, c.envia(t, "/api/acoes", c.corpoJob(t, p)), 403, "step_up_necessario")
+	c.stepUp(t)
+	if rec := c.envia(t, "/api/acoes", c.corpoJob(t, p)); rec.Code != http.StatusAccepted {
+		t.Fatalf("lock: %d %s", rec.Code, rec.Body.String())
+	}
+}

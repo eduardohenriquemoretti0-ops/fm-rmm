@@ -88,6 +88,7 @@ func (l *lab) newAgent(token string) *Agent {
 		l.ran = append(l.ran, a.Name)
 		return "saida de " + a.Name, 0, false, nil
 	}
+	ag.wipe = &wipeFake{} // NUNCA o executor real nos testes
 	return ag
 }
 

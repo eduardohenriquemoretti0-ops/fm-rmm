@@ -73,6 +73,8 @@ type Agent struct {
 	// run/goos: execução de comandos do fluxo nativo de escrow (trocáveis nos testes)
 	run  cmdRunner
 	goos string
+	// wipe: único caminho destrutivo (wipe_remoto); trocado por fake nos testes
+	wipe WipeExecutor
 	// acesso remoto (opcional): sem os dois, concessões de sessão são recusadas
 	indicator     Indicator
 	media         SessionMedia            // padrão
@@ -103,7 +105,7 @@ func (ag *Agent) mediaFor(engine string) SessionMedia {
 }
 
 func New(dir string, log *slog.Logger) (*Agent, error) {
-	ag := &Agent{Dir: dir, Log: log, interval: defaultInterval, now: time.Now, exec: runAction, run: runCmd, goos: runtime.GOOS}
+	ag := &Agent{Dir: dir, Log: log, interval: defaultInterval, now: time.Now, exec: runAction, run: runCmd, goos: runtime.GOOS, wipe: realWipe{run: runCmd}}
 	b, err := os.ReadFile(filepath.Join(dir, fileBundle))
 	if err != nil {
 		return nil, fmt.Errorf("bundle do servidor: %w", err)

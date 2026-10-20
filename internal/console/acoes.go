@@ -149,13 +149,29 @@ func (c *Console) acaoJob(w http.ResponseWriter, op server.Operator, pub ed25519
 		c.recusaAcao(w, op.ID, http.StatusConflict, "agente_indisponivel", map[string]any{"agente": p.AgentID})
 		return
 	}
-	if _, err := catalog.Validate(p.Action, a.OS, p.Params); err != nil {
+	act, err := catalog.Validate(p.Action, a.OS, p.Params)
+	if err != nil {
 		c.recusaAcao(w, op.ID, http.StatusUnprocessableEntity, "acao_fora_do_catalogo", map[string]any{"acao": truncaAud(p.Action)})
 		return
 	}
 	if !c.sessoes.StepUpValido(tok, thumb) {
 		c.recusaAcao(w, op.ID, http.StatusForbidden, "step_up_necessario", map[string]any{"job": p.JobID})
 		return
+	}
+	if act.Destructive {
+		// ação irreversível: a confirmação digitada precisa casar com o agente-alvo
+		// (o agente reconfere). A intenção é auditada ANTES de enfileirar: se a
+		// auditoria falhar, nada é enfileirado.
+		if p.Params["confirmacao"] != "WIPE-"+p.AgentID {
+			c.recusaAcao(w, op.ID, http.StatusUnprocessableEntity, "confirmacao_destrutiva_invalida", map[string]any{"job": p.JobID, "agente": p.AgentID, "acao": p.Action})
+			return
+		}
+		if err := c.st.Audit("console.acao.destrutiva", op.ID, map[string]any{
+			"job": p.JobID, "agente": p.AgentID, "acao": p.Action, "motivo": p.Params["motivo"], "chave": req.KeyID, "step_up": true,
+		}); err != nil {
+			erroInterno(w)
+			return
+		}
 	}
 	if err := c.st.EnfileirarJobDoOperador(op.ID, p, sj); err != nil {
 		c.falhaEnfileirar(w, op.ID, err, p.JobID)

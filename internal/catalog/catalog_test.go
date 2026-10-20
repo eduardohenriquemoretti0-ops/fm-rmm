@@ -59,6 +59,9 @@ func TestCatalogCompleto(t *testing.T) {
 	for _, n := range Names() {
 		a, _ := Get(n)
 		for _, o := range []string{"windows", "linux", "darwin"} {
+			if a.Destructive && o == "darwin" {
+				continue // wipe_remoto: sem suporte no macOS (MDM), recusado por Validate
+			}
 			sc, existe := a.Scripts[o]
 			if !existe || (sc == "" && !a.Native) { // nativa: só lista o SO, sem script
 				t.Errorf("%s sem script para %s", n, o)
@@ -146,5 +149,60 @@ func TestForcarCriptografiaEhNativaEMudaEstado(t *testing.T) {
 	}
 	if c, _ := Get("cripto_status"); c.Changes || c.Native {
 		t.Error("cripto_status deve ser só leitura (script)")
+	}
+}
+
+func TestAntiFurtoCatalogoEValidate(t *testing.T) {
+	w, ok := Get("wipe_remoto")
+	if !ok || !w.Destructive || !w.Changes || !w.Native {
+		t.Fatalf("wipe_remoto deve ser Changes+Destructive+Native: %+v", w)
+	}
+	if l, ok := Get("lock_remoto"); !ok || !l.Changes || l.Destructive || l.Native {
+		t.Fatalf("lock_remoto: Changes, não destrutivo, script: %+v", l)
+	}
+	for _, n := range Names() {
+		if a, _ := Get(n); n != "wipe_remoto" && a.Destructive {
+			t.Errorf("%s marcada Destructive sem ser o wipe", n)
+		}
+	}
+	ok1 := map[string]string{"motivo": "roubo", "confirmacao": "WIPE-ag-0123456789abcdef"}
+	if _, err := Validate("wipe_remoto", "windows", ok1); err != nil {
+		t.Fatalf("válido recusado: %v", err)
+	}
+	if _, err := Validate("wipe_remoto", "darwin", ok1); err == nil {
+		t.Error("wipe em darwin deveria ser recusado")
+	}
+	ruins := []map[string]string{
+		{"motivo": "roubo"},
+		{"confirmacao": "WIPE-ag-1"},
+		{"motivo": "roubo;calc", "confirmacao": "WIPE-ag-1"},
+		{"motivo": "roubo", "confirmacao": "WIPE-ag-1;calc"},
+		{"motivo": "roubo", "confirmacao": "WIPE-ag-1 && calc"},
+		{"motivo": "roubo", "confirmacao": "WIPE-$(id)"},
+		{"motivo": "roubo", "confirmacao": "wipe-ag-1"},
+		{"motivo": "roubo", "confirmacao": "ag-1"},
+		{"motivo": "texto livre", "confirmacao": "WIPE-ag-1"},
+		{"motivo": "roubo", "confirmacao": "WIPE-ag-1", "extra": "x"},
+	}
+	for _, p := range ruins {
+		if _, err := Validate("wipe_remoto", "linux", p); err == nil {
+			t.Errorf("aceitou %v", p)
+		}
+	}
+	if _, err := Validate("lock_remoto", "windows", map[string]string{"exigir_recuperacao": "sim"}); err != nil {
+		t.Error(err)
+	}
+	for _, v := range []string{"nao", "sim;calc", "1"} {
+		if _, err := Validate("lock_remoto", "windows", map[string]string{"exigir_recuperacao": v}); err == nil {
+			t.Errorf("lock aceitou %q", v)
+		}
+	}
+	if _, err := Validate("lock_remoto", "linux", map[string]string{"exigir_recuperacao": "sim"}); err == nil {
+		t.Error("exigir_recuperacao só existe no Windows")
+	}
+	for _, g := range []string{"windows", "linux", "darwin"} {
+		if _, err := Validate("lock_remoto", g, nil); err != nil {
+			t.Errorf("lock %s: %v", g, err)
+		}
 	}
 }

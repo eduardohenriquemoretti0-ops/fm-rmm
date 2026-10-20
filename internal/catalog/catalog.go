@@ -36,10 +36,14 @@ type Action struct {
 	// Native: a ação NÃO roda script; o agente a trata por código próprio
 	// (ex.: forcar_criptografia, que sela a chave de recuperação). Scripts só
 	// lista os SOs suportados (valores vazios); runAction recusa ações nativas.
-	Native  bool
-	Timeout time.Duration
-	Params  map[string]Param
-	Scripts map[string]string // GOOS -> script (powershell no windows, sh nos demais)
+	Native bool
+	// Destructive: a ação é IRREVERSÍVEL (ex.: wipe_remoto). Exige, além da
+	// concessão assinada, step-up no console e uma confirmação explícita tipada
+	// no payload; o agente recusa se qualquer uma faltar. Sempre implica Changes.
+	Destructive bool
+	Timeout     time.Duration
+	Params      map[string]Param
+	Scripts     map[string]string // GOOS -> script (powershell no windows, sh nos demais)
 }
 
 var safeValue = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -53,6 +57,9 @@ var actions = map[string]Action{}
 func register(a Action) {
 	if a.Timeout == 0 {
 		a.Timeout = 60 * time.Second
+	}
+	if a.Destructive && !a.Changes {
+		panic("catalog: ação destrutiva precisa ser Changes: " + a.Name)
 	}
 	ps := make(map[string]Param, len(a.Params))
 	for k, p := range a.Params {

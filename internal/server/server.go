@@ -314,7 +314,11 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "job não está aguardando resultado deste agente")
 		return
 	}
-	s.audit("job.resultado", "agente:"+a.ID, map[string]any{"job": res.JobID, "status": res.Status, "codigo_saida": res.ExitCode, "erro": res.Error})
+	dados := map[string]any{"job": res.JobID, "status": res.Status, "codigo_saida": res.ExitCode, "erro": res.Error}
+	if j, err := s.Store.Job(res.JobID); err == nil {
+		dados["acao"], dados["emissor"] = j.Action, j.Issuer // lock_remoto/wipe_remoto: quem pediu e o que foi
+	}
+	s.audit("job.resultado", "agente:"+a.ID, dados)
 	if rec != nil {
 		s.registrarEscrow(a.ID, res, *rec)
 	}

@@ -488,3 +488,90 @@ exit 0
 		},
 	})
 }
+
+// ------------------------------------------------------- anti-furto (3d-2)
+//
+// Resposta a Perda/Roubo AUTORIZADA. Ambas são ações assinadas (Changes).
+//
+// lock_remoto: trava o dispositivo. REVERSÍVEL (o usuário volta com a senha;
+// com exigir_recuperacao=sim no Windows, pede a chave de recuperação do
+// BitLocker no próximo boot — a chave está no escrow do 3d-1).
+//
+// wipe_remoto: IRREVERSÍVEL. Cripto-erase: destrói os protetores de chave do
+// disco cifrado (BitLocker/LUKS), tornando os dados ilegíveis de imediato. NÃO
+// sobrescreve o disco. Disco não cifrado => o agente RECUSA (não há cripto-erase
+// possível; cifre antes com forcar_criptografia ou faça reset físico/MDM).
+// macOS: sem suporte (use MDM EraseDevice). Gate completo em
+// internal/agent/wipe.go; aqui ficam só os parâmetros validados.
+
+// confirmacaoWipe: "WIPE-" + agent_id (que é "ag-<hex>"). O agente confere a
+// igualdade exata com o PRÓPRIO id.
+const confirmacaoWipe = `WIPE-[a-z0-9-]+`
+
+func init() {
+	register(Action{
+		Name:    "lock_remoto",
+		Desc:    "Trava o dispositivo (sessão/tela). Reversível. No Windows, opcionalmente força a chave de recuperação do BitLocker no próximo boot",
+		Changes: true,
+		Params: map[string]Param{
+			"exigir_recuperacao": {
+				Desc:     "sim: força modo de recuperação BitLocker no próximo boot (Windows)",
+				Optional: true,
+				Allowed:  map[string][]string{"windows": {"sim"}},
+			},
+		},
+		Scripts: map[string]string{
+			"windows": psHead + `
+# O agente roda como SYSTEM (sessão 0): LockWorkStation não alcança a sessão do
+# usuário. tsdiscon desconecta a sessão interativa e a tela de bloqueio exige a senha.
+$ids = @()
+foreach ($l in @(quser 2>$null | Select-Object -Skip 1)) {
+  $t = ($l -replace '^[>\s]+', '') -split '\s+'
+  foreach ($x in $t | Select-Object -Skip 1) { if ($x -match '^\d+$') { $ids += $x; break } }
+}
+foreach ($i in $ids) { tsdiscon $i }
+Write-Output ("sessoes_travadas=" + $ids.Count)
+if ($P_exigir_recuperacao -eq 'sim') {
+  $v = $env:SystemDrive
+  manage-bde -forcerecovery $v
+  if ($LASTEXITCODE -ne 0) { throw "manage-bde -forcerecovery falhou ($LASTEXITCODE)" }
+  Write-Output "recuperacao_bitlocker=exigida_no_proximo_boot volume=$v"
+}
+`,
+			"linux": shHead + `
+if command -v loginctl >/dev/null 2>&1; then
+  loginctl lock-sessions && echo "sessoes=travadas (loginctl lock-sessions)" && exit 0
+fi
+echo "loginctl indisponivel: nao foi possivel travar a sessao" >&2
+exit 3
+`,
+			"darwin": shHead + `
+CGS="/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession"
+if [ -x "$CGS" ]; then "$CGS" -suspend && echo "sessao=travada (CGSession -suspend)" && exit 0; fi
+pmset displaysleepnow && echo "tela=apagada (exige senha se 'pedir senha imediatamente' estiver ativo)" && exit 0
+echo "nao foi possivel travar" >&2
+exit 3
+`,
+		},
+	})
+
+	register(Action{
+		Name:        "wipe_remoto",
+		Desc:        "DESTRUTIVO E IRREVERSÍVEL: cripto-erase do disco cifrado (remove os protetores BitLocker/LUKS). Exige confirmação WIPE-<agent_id> e motivo perda|roubo",
+		Changes:     true,
+		Destructive: true,
+		Native:      true,
+		Timeout:     10 * time.Minute,
+		Params: map[string]Param{
+			"motivo": {
+				Desc: "caso de uso autorizado",
+				Allowed: map[string][]string{
+					"windows": {"perda", "roubo"},
+					"linux":   {"perda", "roubo"},
+				},
+			},
+			"confirmacao": {Desc: "WIPE-<agent_id>, digitado pelo operador", Pattern: confirmacaoWipe},
+		},
+		Scripts: map[string]string{"windows": "", "linux": ""}, // darwin: sem suporte (MDM)
+	})
+}

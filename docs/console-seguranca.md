@@ -196,3 +196,21 @@ de admin (raiz) continua **100% offline**.
   multicast e 0.0.0.0 (checado no IP resolvido); sem redirect, sem proxy.
 - Pendente (decisão de arquitetura): inventário de hosts de BMC por grupo/cliente
   (hoje o RBAC é por técnico, não por host), rate-limit por operador.
+
+## Anti-furto: lock_remoto e wipe_remoto (3d-2)
+
+Resposta a Perda/Roubo autorizada. Ambas são ações **assinadas** (job assinado no navegador, trust-set no agente).
+
+- `lock_remoto` (reversível): Windows `tsdiscon` nas sessões interativas (o agente roda como SYSTEM; `LockWorkStation` não alcança a sessão do usuário); opcional `exigir_recuperacao=sim` -> `manage-bde -forcerecovery` (pede a chave de recuperação do escrow 3d-1 no próximo boot). Linux `loginctl lock-sessions`; macOS `CGSession -suspend`/`pmset displaysleepnow`.
+- `wipe_remoto` (**irreversível**, `Destructive`): cripto-erase. Remove os protetores BitLocker (`manage-bde -protectors -delete`) / destrói os keyslots LUKS (`cryptsetup luksErase`) e desliga a máquina. Não sobrescreve o disco. Disco não cifrado -> recusa (nada apagado); macOS sem suporte (use MDM).
+
+Gate do wipe (qualquer falha = recusa auditada, nada executado):
+
+1. assinatura válida no trust-set + anti-replay + catálogo (`handleJob`);
+2. ação `Destructive` no catálogo;
+3. `motivo` em `perda|roubo` e `confirmacao == "WIPE-"+agent_id` (digitado pelo operador), job para este agente;
+4. step-up: imposto pelo **console** (sem step-up válido o job não é enfileirado). O payload assinado não tem flag de step-up, então o agente não o reverifica.
+
+Auditoria: `console.acao.destrutiva` (operador, agente, motivo, job, key_id; sem a confirmação) é gravada ANTES de enfileirar; `console.acao.enfileirada` (lock e wipe); `job.resultado` agora traz `acao` e `emissor`; o agente loga RECUSADO/EXECUTANDO/CONCLUÍDO.
+
+Runtime de manage-bde/cryptsetup/shutdown: só validar na VM, com extremo cuidado.
