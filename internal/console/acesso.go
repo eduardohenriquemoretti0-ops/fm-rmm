@@ -22,6 +22,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/pki"
@@ -47,6 +48,10 @@ type Console struct {
 	agora     func() time.Time
 	estaticos string // diretório do SPA (web/dist); vazio = não serve estáticos
 	relayBase string // wss:// do relay aceito em concessões (vazio = concessões desligadas)
+
+	// BMC/Redfish (bmc.go): raízes extras e política de destino. Nulos = padrão seguro.
+	bmcRoots     *x509.CertPool
+	bmcProibirIP func(netip.Addr) bool
 }
 
 // NovoConsole monta o console. Exige que o Autenticador e o store sejam os

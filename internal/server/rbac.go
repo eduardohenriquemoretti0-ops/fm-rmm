@@ -164,3 +164,13 @@ func (s *Store) Techs() ([]TechPerm, error) {
 	}
 	return out, nil
 }
+
+// TechTemGrupo informa se o técnico (ativo) pertence EXATAMENTE ao grupo grp.
+// Diferente de CanAccess, o curinga '*' NÃO vale: serve a capacidades sensíveis
+// (ex.: controle de energia via BMC) que exigem concessão explícita.
+func (s *Store) TechTemGrupo(tech, grp string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM tech_groups g JOIN techs t ON t.name=g.tech
+		WHERE g.tech=? AND g.grp=? AND t.disabled=0`, tech, grp).Scan(&n)
+	return n > 0, err
+}

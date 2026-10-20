@@ -57,6 +57,8 @@ Operação:
   techs    --dir D [list|add NOME|disable NOME|enable NOME|grant NOME GRUPO|revoke NOME GRUPO]  (acesso remoto; GRUPO '*' = todas)
   session  --dir D new --key admin.key --agent ID --tech NOME [--mode view|control] [--ttl 15m]  (indicador SEMPRE visível)
   session  --dir D list
+  bmc      status|power --host H [--acao On|ForceOff|GracefulShutdown|ForceRestart|GracefulRestart] [--insecure] [--senha-stdin] [--dir D]
+           (BMC/Redfish; senha só por $FMRMM_BMC_PASS ou stdin; nada é guardado)
   view     --dir D --relay-url wss://host:8443 --session ses-... --token TOK --out DIR [--frames N]  (console: recebe e salva a tela)
   audit    --dir D verify | list [--tail 50]
 Operadores do console (ver docs/console-onboarding-operador.md):
@@ -114,6 +116,8 @@ func main() {
 		err = cmdOperadores(args)
 	case "cve":
 		err = cmdCVE(args)
+	case "bmc":
+		err = cmdBMC(args)
 	case "catalog":
 		cmdCatalog()
 	case "version":

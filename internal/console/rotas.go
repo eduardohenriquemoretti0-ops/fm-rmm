@@ -32,6 +32,8 @@ const limiteCorpo = 64 << 10
 //	GET  /api/agentes             sessão -> agentes visíveis ao operador (RBAC)
 //	GET  /api/agentes/{id}        sessão -> detalhe + últimos resultados de leitura (404 sem RBAC)
 //	GET  /api/agentes/{id}/vulnerabilidades  sessão -> resumo de CVEs (OSV; lê o banco, 404 sem RBAC)
+//	POST /api/bmc/status          sessão + CSRF + step-up + grupo bmc -> estado de energia do BMC (credencial por ação, não persistida)
+//	POST /api/bmc/power           idem -> ação de energia (On/ForceOff/GracefulShutdown/ForceRestart/GracefulRestart)
 //
 // O registro não tem sessão (o operador ainda não loga): fica atrás só do cert,
 // e o Autenticador recusa tudo que não seja operador 'pendente'. A ativação
@@ -54,6 +56,8 @@ func (c *Console) Roteador() http.Handler {
 	mux.Handle("GET /api/agentes/{id}", c.protegido(c.detalheAgente))
 	mux.Handle("GET /api/agentes/{id}/vulnerabilidades", c.protegido(c.vulnerabilidadesAgente))
 	mux.Handle("POST /api/acoes", c.protegido(c.criarAcao))
+	mux.Handle("POST /api/bmc/status", c.protegido(c.bmcStatus))
+	mux.Handle("POST /api/bmc/power", c.protegido(c.bmcPower))
 	mux.Handle("POST /api/operador/chave-assinatura", c.protegido(c.registrarChaveAssinatura))
 	if c.estaticos != "" {
 		// "GET /" é o fallback do mux: qualquer rota não registrada cai aqui.

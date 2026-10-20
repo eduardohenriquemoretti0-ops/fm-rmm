@@ -180,3 +180,19 @@ de admin (raiz) continua **100% offline**.
   não-exportável, canonicalização idêntica à do servidor, assina, verifica
   ida-e-volta, envia a `/api/acoes`. Também alinhar a rota para `/api/agentes` e os
   campos ao JSON real do T4.
+
+## BMC / Redfish (controle de energia de servidor) — Plano v2 §3.2
+
+- Rotas: `POST /api/bmc/status` e `POST /api/bmc/power` (cert + sessão + CSRF +
+  **step-up** + técnico no grupo exato `bmc`; o curinga `*` não vale). CLI:
+  `fmrmm-server bmc status|power` (senha só por `$FMRMM_BMC_PASS` ou `--senha-stdin`).
+- **Credencial do BMC não é armazenada**: vem no corpo a cada chamada, é usada e
+  descartada; nunca em log, auditoria, erro ou resposta. Auditoria
+  (`console.bmc.power` / `console.bmc.status` / `console.bmc.recusada`) guarda só
+  host, porta, system_id, ação, resultado e `insecure`.
+- TLS valida o certificado do BMC por padrão; `insecure:true` é explícito, gera aviso
+  na resposta, no log e `insecure=true` na auditoria.
+- SSRF: host validado (IP/hostname simples); conexão recusa loopback, link-local,
+  multicast e 0.0.0.0 (checado no IP resolvido); sem redirect, sem proxy.
+- Pendente (decisão de arquitetura): inventário de hosts de BMC por grupo/cliente
+  (hoje o RBAC é por técnico, não por host), rate-limit por operador.
