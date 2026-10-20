@@ -20,6 +20,19 @@ package agent
 //     repositório (InRelease/GPG) e os hashes dos .deb. Os campos publisher e
 //     sha256 do item são informativos/auditoria: o agente NÃO os usa para
 //     autorizar nada.
+//   - EXCEÇÃO (defesa em profundidade, sha256 imposto): se o item do catálogo
+//     assinado traz sha256, o agente BAIXA o instalador antes de instalar,
+//     confere o hash e RECUSA se divergir (verificarSHA256). Item sem sha256 =
+//     fluxo acima, inalterado. O sha256 refere-se ao ARQUIVO instalador
+//     (winget: o instalador do manifesto; apt: o .deb do próprio pacote, sem
+//     contar dependências). Falha ao baixar/localizar o arquivo = recusa
+//     (falha fechada). LIMITAÇÕES: (a) winget não permite instalar o arquivo
+//     que baixamos com segurança (os switches silenciosos dependem do
+//     manifesto), então "winget download" confere o hash e "winget install"
+//     baixa de novo; o winget já valida o hash contra o manifesto da fonte,
+//     mas há uma janela TOCTOU entre os dois downloads que só o hash do
+//     manifesto cobre; (b) apt reaproveita os .deb baixados (Dir::Cache::archives
+//     apontando p/ o diretório verificado), sem novo download.
 //   - winget sob SYSTEM (LIMITAÇÃO CONHECIDA DA MICROSOFT): o agente roda como
 //     SYSTEM/Session 0, e o winget é o App Installer (MSIX, instalado por
 //     usuário): não está no PATH do SYSTEM. Por isso resolverWinget procura
@@ -39,9 +52,12 @@ package agent
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -238,6 +254,17 @@ func (ag *Agent) softwareAcao(ctx context.Context, a catalog.Action, p proto.Job
 		}
 		cmd.Name = exe
 	}
+	if op == "instalar" && it.SHA256 != "" {
+		dir, err := ag.verificarSHA256(ctx, run, &cmd, it)
+		if dir != "" {
+			defer os.RemoveAll(dir)
+		}
+		if err != nil {
+			log.Warn("software RECUSADO: sha256 do instalador", "erro", err.Error())
+			return "", fmt.Errorf("%s recusado (%s): %v", a.Name, it.ID, err)
+		}
+		log.Info("software: sha256 do instalador conferido", "sha256", it.SHA256)
+	}
 	log.Info("software EXECUTANDO", "comando", cmd.String())
 	out, err := run(ctx, cmd.Name, cmd.Args...)
 	if err != nil {
@@ -246,6 +273,93 @@ func (ag *Agent) softwareAcao(ctx context.Context, a catalog.Action, p proto.Job
 	}
 	log.Info("software CONCLUÍDO")
 	return fmt.Sprintf("%s item=%s pkg=%s gerenciador=%s %s", op, it.ID, it.PkgID, it.Gerenciador, resumo(out)), nil
+}
+
+// verificarSHA256 baixa o instalador do item (diretório temporário 0700,
+// devolvido p/ o chamador remover) e confere o sha256 do catálogo assinado.
+// Em apt, ajusta cmd p/ instalar a partir dos .deb verificados.
+func (ag *Agent) verificarSHA256(ctx context.Context, run cmdRunner, cmd *SoftCmd, it sign.SoftwareItem) (string, error) {
+	dir, err := os.MkdirTemp("", "fmrmm-sw-")
+	if err != nil {
+		return "", fmt.Errorf("sha256 não verificável (diretório temporário): %v", err)
+	}
+	switch it.Gerenciador {
+	case sign.GerenciadorApt:
+		pkg := it.PkgID
+		if it.Versao != "" {
+			pkg += "=" + it.Versao
+		}
+		if out, err := run(ctx, "apt-get", "install", "--download-only", "-y",
+			"-o", "Dir::Cache::archives="+dir, pkg); err != nil {
+			return dir, fmt.Errorf("sha256 não verificável: download falhou: %v: %s", err, resumo(out))
+		}
+		arqs, _ := filepath.Glob(filepath.Join(dir, it.PkgID+"_*.deb"))
+		if err := conferirHashes(arqs, it.SHA256, false); err != nil {
+			return dir, err
+		}
+		// instala a partir dos .deb já verificados (sem novo download do pacote)
+		cmd.Args = append([]string{"-o", "Dir::Cache::archives=" + dir}, cmd.Args...)
+		return dir, nil
+	case sign.GerenciadorWinget:
+		args := []string{"download", "--id", it.PkgID, "--exact", "--skip-dependencies",
+			"--download-directory", dir, "--accept-package-agreements", "--accept-source-agreements"}
+		if it.Versao != "" {
+			args = append(args, "--version", it.Versao)
+		}
+		if out, err := run(ctx, cmd.Name, args...); err != nil {
+			return dir, fmt.Errorf("sha256 não verificável: winget download falhou: %v: %s", err, resumo(out))
+		}
+		ents, _ := os.ReadDir(dir)
+		var arqs []string
+		for _, e := range ents {
+			ext := strings.ToLower(filepath.Ext(e.Name()))
+			if e.Type().IsRegular() && ext != ".yaml" && ext != ".yml" {
+				arqs = append(arqs, filepath.Join(dir, e.Name()))
+			}
+		}
+		return dir, conferirHashes(arqs, it.SHA256, true)
+	}
+	return dir, fmt.Errorf("sha256 não verificável: gerenciador %q", it.Gerenciador)
+}
+
+// conferirHashes exige ao menos um arquivo e que o hash confira (qualquer um se
+// anyOne, p/ pastas com vários instaladores; senão TODOS). Diverge => erro.
+func conferirHashes(arqs []string, esperado string, anyOne bool) error {
+	if len(arqs) == 0 {
+		return errors.New("sha256 não verificável: instalador baixado não encontrado")
+	}
+	var obtidos []string
+	for _, f := range arqs {
+		h, err := sha256Arquivo(f)
+		if err != nil {
+			return fmt.Errorf("sha256 não verificável: %v", err)
+		}
+		ok := h == esperado
+		if ok && anyOne {
+			return nil
+		}
+		if !ok && !anyOne {
+			return fmt.Errorf("sha256 DIVERGE: %s esperado=%s obtido=%s", filepath.Base(f), esperado, h)
+		}
+		obtidos = append(obtidos, h)
+	}
+	if anyOne {
+		return fmt.Errorf("sha256 DIVERGE: esperado=%s obtido(s)=%s", esperado, strings.Join(obtidos, ","))
+	}
+	return nil
+}
+
+func sha256Arquivo(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // dicaWinget acrescenta uma explicação quando o winget morre com 0xc0000135

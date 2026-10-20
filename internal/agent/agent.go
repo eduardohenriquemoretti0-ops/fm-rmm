@@ -318,7 +318,11 @@ func (ag *Agent) enroll(ctx context.Context) (bool, error) {
 
 func (ag *Agent) heartbeat() proto.Heartbeat {
 	host, _ := os.Hostname()
-	return proto.Heartbeat{Hostname: host, OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: Version, UptimeSec: uptimeSeconds()}
+	hb := proto.Heartbeat{Hostname: host, OS: runtime.GOOS, Arch: runtime.GOARCH, AgentVersion: Version, UptimeSec: uptimeSeconds()}
+	if runtime.GOOS == "linux" {
+		hb.OSID, hb.OSVersionID = lerOSRelease("/etc/os-release")
+	}
+	return hb
 }
 
 // CheckinOnce faz um check-in completo: busca jobs, executa e reporta.

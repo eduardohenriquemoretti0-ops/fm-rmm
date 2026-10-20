@@ -46,6 +46,11 @@ type Heartbeat struct {
 	Arch         string `json:"arch"`
 	AgentVersion string `json:"agent_version"`
 	UptimeSec    int64  `json:"uptime_sec"`
+	// OSID/OSVersionID: ID e VERSION_ID do /etc/os-release (só Linux). O servidor
+	// deriva o ecossistema OSV (ex.: Debian:12). Informativo e não assinado; o
+	// servidor valida o alfabeto antes de usar.
+	OSID        string `json:"os_id,omitempty"`
+	OSVersionID string `json:"os_version_id,omitempty"`
 }
 
 type CheckinRequest struct {

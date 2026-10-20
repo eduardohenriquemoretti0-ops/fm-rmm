@@ -71,9 +71,11 @@ type Engine struct {
 	St   *Store
 	HTTP *http.Client // padrão: timeout de 20s
 	Base string       // padrão https://api.osv.dev (testes apontam para httptest)
-	// EcossistemaLinux é o ecossistema OSV das distros (ex.: "Debian:12",
-	// "Ubuntu:24.04"). O inventário não informa a release da distro; sem isso
-	// os pacotes Linux ficam "não avaliados" (não adivinhamos).
+	// EcossistemaLinux é o ecossistema OSV FALLBACK p/ agentes Linux que não
+	// reportaram os-release (agente antigo) ou cuja distro não mapeamos. O
+	// normal é derivar de ID+VERSION_ID reportados no heartbeat (ver
+	// EcossistemaOSV). Sem nenhum dos dois, os pacotes ficam "não avaliados"
+	// (não adivinhamos).
 	EcossistemaLinux string
 	CPE              FonteCPE
 	Agora            func() time.Time
@@ -174,15 +176,15 @@ type consulta struct {
 }
 
 // mapear separa itens consultáveis no OSV dos "não avaliados" (com motivo).
-func (e *Engine) mapear(goos string, itens []Item) (cons []consulta, nao []NaoAvaliado) {
+func (e *Engine) mapear(goos, ecoLinux string, itens []Item) (cons []consulta, nao []NaoAvaliado) {
 	for _, it := range itens {
 		switch {
 		case it.Versao == "" || it.Versao == "?":
 			nao = append(nao, NaoAvaliado{it.Nome, it.Versao, "sem versão no inventário"})
-		case goos == "linux" && e.EcossistemaLinux != "":
-			cons = append(cons, consulta{Item: it, Ecossis: e.EcossistemaLinux, Nome: it.Nome, Ver: it.Versao})
+		case goos == "linux" && ecoLinux != "":
+			cons = append(cons, consulta{Item: it, Ecossis: ecoLinux, Nome: it.Nome, Ver: it.Versao})
 		case goos == "linux":
-			nao = append(nao, NaoAvaliado{it.Nome, it.Versao, "release da distro desconhecida (ecossistema OSV não configurado)"})
+			nao = append(nao, NaoAvaliado{it.Nome, it.Versao, "release da distro desconhecida (os-release não reportado/não mapeado e --linux-ecosystem não configurado)"})
 		case goos == "windows":
 			nao = append(nao, NaoAvaliado{it.Nome, it.Versao, "OSV não cobre aplicativo Windows por nome de exibição (gancho CPE/NVD)"})
 		default:
@@ -220,7 +222,7 @@ func (e *Engine) Scan(ctx context.Context, agentID string) (ResultadoScan, error
 		return ResultadoScan{}, fmt.Errorf("resultado do job %s ilegível: %w", job.ID, err)
 	}
 	itens := ParseInventario(ag.OS, res.Output)
-	cons, nao := e.mapear(ag.OS, itens)
+	cons, nao := e.mapear(ag.OS, e.ecossistemaLinuxDe(ag), itens)
 
 	var achados []Achado
 	var erros []string
@@ -660,4 +662,51 @@ func (s *Store) ResumoVulns(agentID string) (ResumoVulnerabilidades, error) {
 		}
 	}
 	return r, nil
+}
+
+// EcossistemaOSV mapeia ID e VERSION_ID do /etc/os-release para o ecossistema
+// OSV dos pacotes dpkg. Só mapeia o que o inventário (dpkg) e o OSV cobrem de
+// forma confiável: debian -> "Debian:<major>", ubuntu -> "Ubuntu:<AA.MM>".
+// Qualquer outra coisa (distro desconhecida, versão vazia ou fora do alfabeto)
+// devolve ok=false => pacotes "não avaliados".
+func EcossistemaOSV(id, versaoID string) (string, bool) {
+	id, versaoID = strings.ToLower(strings.TrimSpace(id)), strings.TrimSpace(versaoID)
+	if versaoID == "" || len(versaoID) > 16 {
+		return "", false
+	}
+	for _, r := range versaoID {
+		if (r < '0' || r > '9') && r != '.' {
+			return "", false
+		}
+	}
+	switch id {
+	case "debian":
+		major, _, _ := strings.Cut(versaoID, ".")
+		if major == "" {
+			return "", false
+		}
+		return "Debian:" + major, true
+	case "ubuntu":
+		partes := strings.Split(versaoID, ".")
+		if len(partes) != 2 || partes[0] == "" || partes[1] == "" {
+			return "", false
+		}
+		return "Ubuntu:" + versaoID, true
+	}
+	return "", false
+}
+
+// ecossistemaLinuxDe prefere o ecossistema derivado do os-release reportado
+// pelo agente (por máquina); cai no EcossistemaLinux configurado.
+func (e *Engine) ecossistemaLinuxDe(ag Agent) string {
+	var hb struct {
+		OSID        string `json:"os_id"`
+		OSVersionID string `json:"os_version_id"`
+	}
+	if ag.Heartbeat != "" && json.Unmarshal([]byte(ag.Heartbeat), &hb) == nil {
+		if eco, ok := EcossistemaOSV(hb.OSID, hb.OSVersionID); ok {
+			return eco
+		}
+	}
+	return e.EcossistemaLinux
 }

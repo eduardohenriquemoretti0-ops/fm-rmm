@@ -63,7 +63,7 @@ type SoftwareItem struct {
 	PkgID       string `json:"pkg_id"`              // id EXATO no gerenciador
 	Versao      string `json:"versao,omitempty"`    // fixa a versão (opcional)
 	Publisher   string `json:"publisher,omitempty"` // informativo/auditoria (opcional)
-	SHA256      string `json:"sha256,omitempty"`    // informativo/auditoria (opcional)
+	SHA256      string `json:"sha256,omitempty"`    // sha256 do instalador; se presente o agente CONFERE e recusa se diverge
 }
 
 // SoftwareCatalog é o corpo assinado.

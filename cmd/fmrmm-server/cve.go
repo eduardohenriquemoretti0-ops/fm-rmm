@@ -18,7 +18,7 @@ func cmdCVE(args []string) error {
 	fs := flag.NewFlagSet("cve", flag.ExitOnError)
 	dir := dirFlag(fs)
 	agente := fs.String("agent", "", "id do agente, ou 'todos' (scan)")
-	eco := fs.String("linux-ecosystem", os.Getenv("FMRMM_CVE_LINUX_ECOSYSTEM"), "ecossistema OSV p/ agentes Linux (ex.: Debian:12, Ubuntu:24.04)")
+	eco := fs.String("linux-ecosystem", os.Getenv("FMRMM_CVE_LINUX_ECOSYSTEM"), "FALLBACK de ecossistema OSV p/ agentes Linux que não reportam os-release ou com distro não mapeada (ex.: Debian:12); o normal é derivar do heartbeat")
 	semNVD := fs.Bool("sem-nvd", false, "não consulta a NVD (só OSV); chave opcional em FMRMM_NVD_API_KEY")
 	if len(args) == 0 {
 		return errors.New("uso: cve --dir D scan|show --agent ID")
