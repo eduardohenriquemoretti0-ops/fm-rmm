@@ -350,3 +350,87 @@ $s = Get-Service -Name $P_nome
 		},
 	})
 }
+
+// wake_on_lan: liga uma máquina desligada na LAN do agente-relay.
+//
+// Como usar: o magic packet é camada 2 e não roteia pela internet; o servidor
+// não alcança o alvo. O operador escolhe um agente-relay ONLINE na MESMA LAN
+// do alvo e informa o MAC do alvo (vem do inventário 3.1). O relay dispara o
+// pacote (6x 0xFF + 16x MAC = 102 bytes) por UDP broadcast nas portas 9 e 7.
+// WoL NÃO usa senha do endpoint: o pacote só liga a máquina (sobe até o
+// login). Requer WoL habilitado na BIOS/NIC do alvo. Changes=true, então exige
+// concessão assinada. Parâmetros: mac (obrigatório, AA:BB:CC:DD:EE:FF ou
+// AA-BB-...) e broadcast (opcional, IPv4; default 255.255.255.255). Ambos
+// validados por Pattern antes de entrar como P_MAC / P_BROADCAST.
+func init() {
+	const (
+		macPattern = `[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}`
+		octeto     = `(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])`
+		ipPattern  = octeto + `(?:\.` + octeto + `){3}`
+	)
+	register(Action{
+		Name:    "wake_on_lan",
+		Desc:    "Wake-on-LAN: este agente (relay) envia o magic packet na LAN dele para o MAC informado (não usa senha do endpoint)",
+		Changes: true,
+		Timeout: 30 * time.Second,
+		Params: map[string]Param{
+			"mac":       {Desc: "MAC do alvo (AA:BB:CC:DD:EE:FF ou AA-BB-CC-DD-EE-FF)", Pattern: macPattern},
+			"broadcast": {Desc: "IPv4 de broadcast da LAN (default 255.255.255.255)", Pattern: ipPattern, Optional: true},
+		},
+		Scripts: map[string]string{
+			"windows": psHead + `
+$mac = ($P_mac -replace '[:-]', '').ToUpper()
+if ($mac -notmatch '^[0-9A-F]{12}$') { throw 'MAC invalido' }
+$bc = '255.255.255.255'
+if (Get-Variable -Name P_broadcast -ErrorAction SilentlyContinue) { $bc = $P_broadcast }
+$m = [byte[]](0..5 | ForEach-Object { [Convert]::ToByte($mac.Substring($_ * 2, 2), 16) })
+$pkt = [byte[]](@(0xFF) * 6) + [byte[]]($m * 16)
+if ($pkt.Length -ne 102) { throw 'pacote com tamanho inesperado' }
+$udp = New-Object System.Net.Sockets.UdpClient
+try {
+  $udp.EnableBroadcast = $true
+  foreach ($port in 9, 7) { [void]$udp.Send($pkt, $pkt.Length, $bc, $port) }
+} finally { $udp.Close() }
+[pscustomobject]@{ magic_packet = $pkt.Length; mac = $mac; broadcast = $bc; portas = '9,7' } | ConvertTo-Json
+`,
+			"linux":  shHead + wolShell,
+			"darwin": shHead + wolShell,
+		},
+	})
+}
+
+// wolShell serve Linux e macOS. Prefere python3 (monta o pacote de forma
+// idêntica em qualquer lugar); senão wakeonlan; senão etherwake (só Linux,
+// precisa de root e usa a interface padrão). Sem nenhum, falha com mensagem clara.
+const wolShell = `
+BC="${P_BROADCAST:-255.255.255.255}"
+MAC=$(printf '%s' "$P_MAC" | tr -d ':-' | tr 'a-f' 'A-F')
+case "$MAC" in
+  [0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]) ;;
+  *) echo "MAC invalido" >&2; exit 2 ;;
+esac
+if command -v python3 >/dev/null 2>&1; then
+  P_MAC_N="$MAC" P_BC_N="$BC" python3 - <<'PYEOF'
+import os, socket, sys
+mac = bytes.fromhex(os.environ["P_MAC_N"])
+bc = os.environ["P_BC_N"]
+pkt = b"\xff" * 6 + mac * 16
+assert len(pkt) == 102
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+try:
+    for port in (9, 7):
+        s.sendto(pkt, (bc, port))
+finally:
+    s.close()
+print("magic packet: %d bytes mac=%s broadcast=%s portas=9,7" % (len(pkt), os.environ["P_MAC_N"], bc))
+PYEOF
+elif command -v wakeonlan >/dev/null 2>&1; then
+  wakeonlan -i "$BC" -p 9 "$MAC" && wakeonlan -i "$BC" -p 7 "$MAC" && echo "magic packet enviado (wakeonlan) mac=$MAC broadcast=$BC portas=9,7"
+elif command -v etherwake >/dev/null 2>&1; then
+  etherwake "$MAC" && echo "magic packet enviado (etherwake, interface padrao) mac=$MAC"
+else
+  echo "nenhuma ferramenta disponivel para Wake-on-LAN: instale python3, wakeonlan ou etherwake neste agente" >&2
+  exit 3
+fi
+`

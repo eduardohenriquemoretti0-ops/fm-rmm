@@ -12,9 +12,21 @@ import (
 	"time"
 )
 
+// Param descreve um parâmetro da ação. O valor é aceito se estiver em
+// Allowed (lista fechada, por GOOS) OU casar com Pattern (regex). Se nenhum
+// dos dois estiver definido, nada é aceito (falha fechada).
 type Param struct {
 	Desc    string
 	Allowed map[string][]string // por GOOS: valores aceitos
+	// Pattern é uma regex (RE2) para valores livres, como MAC e IP. É
+	// ancorada automaticamente (^(?:...)$). Mesmo casando, o valor precisa
+	// ter só [A-Za-z0-9.:-] e até 64 chars: ';', espaço, aspas, $, `, etc.
+	// nunca passam, independente do Pattern.
+	Pattern string
+	// Optional permite omitir o parâmetro (o script usa um default).
+	Optional bool
+
+	re *regexp.Regexp // Pattern compilado em register
 }
 
 type Action struct {
@@ -28,12 +40,24 @@ type Action struct {
 
 var safeValue = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
+// patternSafe é o alfabeto máximo de um valor validado por Pattern. É a trava
+// anti-injeção: vale ANTES do Pattern, então um Pattern frouxo não abre brecha.
+var patternSafe = regexp.MustCompile(`^[A-Za-z0-9.:-]{1,64}$`)
+
 var actions = map[string]Action{}
 
 func register(a Action) {
 	if a.Timeout == 0 {
 		a.Timeout = 60 * time.Second
 	}
+	ps := make(map[string]Param, len(a.Params))
+	for k, p := range a.Params {
+		if p.Pattern != "" {
+			p.re = regexp.MustCompile(`^(?:` + p.Pattern + `)$`) // panic na carga se inválido
+		}
+		ps[k] = p
+	}
+	a.Params = ps
 	actions[a.Name] = a
 }
 
@@ -67,14 +91,26 @@ func Validate(name, goos string, params map[string]string) (Action, error) {
 	for k, p := range a.Params {
 		v, ok := params[k]
 		if !ok {
+			if p.Optional {
+				continue
+			}
 			return a, fmt.Errorf("parâmetro obrigatório ausente: %q", k)
+		}
+		// Aceito por lista fechada (alfabeto restrito) OU por Pattern (alfabeto
+		// restrito + regex). Fora disso, recusa.
+		if safeValue.MatchString(v) && contains(p.Allowed[goos], v) {
+			continue
+		}
+		if p.re != nil && patternSafe.MatchString(v) && p.re.MatchString(v) {
+			continue
+		}
+		if p.re != nil {
+			return a, fmt.Errorf("valor inválido para %q: fora do padrão aceito", k)
 		}
 		if !safeValue.MatchString(v) {
 			return a, fmt.Errorf("valor inválido para %q", k)
 		}
-		if !contains(p.Allowed[goos], v) {
-			return a, fmt.Errorf("valor %q não permitido para %q em %s (aceitos: %v)", v, k, goos, p.Allowed[goos])
-		}
+		return a, fmt.Errorf("valor %q não permitido para %q em %s (aceitos: %v)", v, k, goos, p.Allowed[goos])
 	}
 	return a, nil
 }

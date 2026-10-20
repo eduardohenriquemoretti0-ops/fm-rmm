@@ -14,6 +14,9 @@ func TestValidate(t *testing.T) {
 		{"seguranca", "darwin", nil},
 		{"reiniciar_servico", "windows", map[string]string{"nome": "Spooler"}},
 		{"reiniciar_servico", "linux", map[string]string{"nome": "cups"}},
+		{"wake_on_lan", "windows", map[string]string{"mac": "AA:BB:CC:DD:EE:FF"}},
+		{"wake_on_lan", "linux", map[string]string{"mac": "aa-bb-cc-dd-ee-ff"}},
+		{"wake_on_lan", "darwin", map[string]string{"mac": "00:1a:2B:3c:4D:5e", "broadcast": "192.168.1.255"}},
 	}
 	for _, c := range ok {
 		if _, err := Validate(c.action, c.goos, c.params); err != nil {
@@ -33,6 +36,8 @@ func TestValidate(t *testing.T) {
 		{"injeção sh", "reiniciar_servico", "linux", map[string]string{"nome": "cups;id"}},
 		{"valor de outro SO", "reiniciar_servico", "linux", map[string]string{"nome": "Spooler"}},
 		{"SO desconhecido", "info", "plan9", nil},
+		{"wol sem mac", "wake_on_lan", "linux", nil},
+		{"wol param desconhecido", "wake_on_lan", "linux", map[string]string{"mac": "AA:BB:CC:DD:EE:FF", "x": "1"}},
 	}
 	for _, c := range bad {
 		if _, err := Validate(c.action, c.goos, c.params); err == nil {
@@ -53,5 +58,69 @@ func TestCatalogCompleto(t *testing.T) {
 		if a.Timeout <= 0 {
 			t.Errorf("%s sem timeout", n)
 		}
+	}
+}
+
+func TestWakeOnLAN(t *testing.T) {
+	a, ok := Get("wake_on_lan")
+	if !ok || !a.Changes {
+		t.Fatal("wake_on_lan deve existir e ter Changes=true (concessão assinada)")
+	}
+	mac := "AA:BB:CC:DD:EE:FF"
+	bons := []map[string]string{
+		{"mac": mac},
+		{"mac": "AA-BB-CC-DD-EE-FF"},
+		{"mac": "aa:bb:cc:dd:ee:ff", "broadcast": "255.255.255.255"},
+		{"mac": mac, "broadcast": "10.0.0.255"},
+	}
+	for _, os := range []string{"windows", "linux", "darwin"} {
+		for _, p := range bons {
+			if _, err := Validate("wake_on_lan", os, p); err != nil {
+				t.Errorf("%s %v deveria passar: %v", os, p, err)
+			}
+		}
+	}
+	ruins := map[string]map[string]string{
+		"curto":              {"mac": "AA:BB:CC:DD:EE"},
+		"longo":              {"mac": "AA:BB:CC:DD:EE:FF:00"},
+		"não hex":            {"mac": "GG:BB:CC:DD:EE:FF"},
+		"separador misto":    {"mac": "AA:BB-CC:DD:EE:FF"},
+		"sem separador":      {"mac": "AABBCCDDEEFF"},
+		"vazio":              {"mac": ""},
+		"ponto e vírgula":    {"mac": "AA:BB:CC:DD:EE:FF;id"},
+		"espaço":             {"mac": "AA:BB:CC:DD:EE:FF id"},
+		"aspas simples":      {"mac": "AA:BB:CC:DD:EE:FF'"},
+		"aspas duplas":       {"mac": `"AA:BB:CC:DD:EE:FF"`},
+		"subshell":           {"mac": "$(id)"},
+		"crase":              {"mac": "`id`"},
+		"quebra de linha":    {"mac": "AA:BB:CC:DD:EE:FF\nid"},
+		"broadcast inválido": {"mac": mac, "broadcast": "256.1.1.1"},
+		"broadcast host":     {"mac": mac, "broadcast": "example.com"},
+		"broadcast injeção":  {"mac": mac, "broadcast": "10.0.0.255;id"},
+		"broadcast curto":    {"mac": mac, "broadcast": "10.0.0"},
+	}
+	for nome, p := range ruins {
+		for _, os := range []string{"windows", "linux", "darwin"} {
+			if _, err := Validate("wake_on_lan", os, p); err == nil {
+				t.Errorf("%s (%s): %v deveria ser recusado", nome, os, p)
+			}
+		}
+	}
+}
+
+// Param com Pattern não pode afrouxar a trava anti-injeção, mesmo com um
+// Pattern permissivo (.*): o alfabeto máximo vale antes.
+func TestPatternNaoAbreInjecao(t *testing.T) {
+	register(Action{
+		Name:    "_teste_pattern",
+		Params:  map[string]Param{"v": {Pattern: `.*`}},
+		Scripts: map[string]string{"linux": "true"},
+	})
+	defer delete(actions, "_teste_pattern")
+	if _, err := Validate("_teste_pattern", "linux", map[string]string{"v": "a;b"}); err == nil {
+		t.Error("';' deveria ser recusado mesmo com Pattern .*")
+	}
+	if _, err := Validate("_teste_pattern", "linux", map[string]string{"v": "a:b-c.1"}); err != nil {
+		t.Errorf("valor limpo deveria passar: %v", err)
 	}
 }
