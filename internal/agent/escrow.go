@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/catalog"
@@ -149,20 +150,81 @@ func (ag *Agent) bitlocker(ctx context.Context, volParam string) (chaveColhida, 
 	_, _ = ag.run(ctx, "manage-bde", "-protectors", "-add", vol, "-TPM")
 
 	// liga a proteção só se ainda não estiver ligada
-	st, _ := ag.run(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command",
-		fmt.Sprintf(`(Get-CimInstance -Namespace 'root\cimv2\Security\MicrosoftVolumeEncryption' -ClassName Win32_EncryptableVolume -Filter "DriveLetter='%s'").ProtectionStatus`, vol))
-	if strings.TrimSpace(st) == "1" {
+	prot, conv, okWMI := ag.estadoBitLocker(ctx, vol)
+	if okWMI && prot == 1 && conv == 1 {
 		c.nota = "protecao=ja_ativa"
 		return c, nil
 	}
-	if out, err := ag.run(ctx, "manage-bde", "-on", vol, "-UsedSpaceOnly"); err != nil {
+	onOut, err := ag.run(ctx, "manage-bde", "-on", vol, "-UsedSpaceOnly")
+	if err != nil {
 		// pode estar criptografado e apenas suspenso: tenta retomar
 		if out2, err2 := ag.run(ctx, "manage-bde", "-protectors", "-enable", vol); err2 != nil {
-			return chaveColhida{}, fmt.Errorf("manage-bde -on falhou: %s | -protectors -enable: %s", resumo(out), resumo(out2))
+			return chaveColhida{}, fmt.Errorf("manage-bde -on falhou: %s | -protectors -enable: %s", resumo(onOut), resumo(out2))
 		}
+		onOut = ""
 	}
-	c.nota = "protecao=ligada"
+	// NÃO presume sucesso: relê o estado real (WMI) depois do comando.
+	prot, conv, okWMI = ag.estadoBitLocker(ctx, vol)
+	if !okWMI {
+		c.nota = "protecao=desconhecida (estado WMI ilegível após manage-bde -on)"
+		return c, nil
+	}
+	c.nota = EstadoBitLocker(prot, conv, pedeReboot(onOut))
 	return c, nil
+}
+
+// estadoBitLocker lê ProtectionStatus e ConversionStatus (WMI). ok=false se
+// a leitura ou o parse falhar.
+func (ag *Agent) estadoBitLocker(ctx context.Context, vol string) (prot, conv int, ok bool) {
+	out, err := ag.run(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+		fmt.Sprintf(`$v = Get-CimInstance -Namespace 'root\cimv2\Security\MicrosoftVolumeEncryption' -ClassName Win32_EncryptableVolume -Filter "DriveLetter='%s'"; "$($v.ProtectionStatus);$($v.ConversionStatus)"`, vol))
+	if err != nil {
+		return 0, 0, false
+	}
+	return parseEstadoBitLocker(out)
+}
+
+func parseEstadoBitLocker(out string) (prot, conv int, ok bool) {
+	f := strings.Split(strings.TrimSpace(out), ";")
+	if len(f) != 2 {
+		return 0, 0, false
+	}
+	var err1, err2 error
+	prot, err1 = strconv.Atoi(strings.TrimSpace(f[0]))
+	conv, err2 = strconv.Atoi(strings.TrimSpace(f[1]))
+	return prot, conv, err1 == nil && err2 == nil
+}
+
+// pedeReboot: a saída do manage-bde -on indica reinício necessário (teste de
+// hardware do TPM), em inglês ou português.
+func pedeReboot(out string) bool {
+	t := strings.ToLower(out)
+	return strings.Contains(t, "restart") || strings.Contains(t, "reinici") || strings.Contains(t, "reboot")
+}
+
+// EstadoBitLocker mapeia Win32_EncryptableVolume (ProtectionStatus:
+// 0 off, 1 on, 2 desconhecido; ConversionStatus: 0 decifrado, 1 cifrado,
+// 2 cifrando, 3 decifrando, 4 cifra pausada, 5 decifra pausada) para a nota.
+// "ligada" SÓ com ProtectionStatus=1 e a conversão realmente iniciada/concluída.
+func EstadoBitLocker(prot, conv int, rebootPedido bool) string {
+	switch {
+	case prot == 1 && conv == 1:
+		return "protecao=ligada conversao=concluida"
+	case prot == 1 && (conv == 2 || conv == 4):
+		return "protecao=ligada conversao=em_andamento"
+	case prot == 1 && conv == 0:
+		// proteção "on" sem nada cifrado: ainda não começou
+		return "protecao=pendente_reboot conversao=aguardando_reboot"
+	case prot == 0 && conv == 0 && rebootPedido:
+		return "protecao=pendente_reboot conversao=aguardando_reboot"
+	case prot == 0 && conv == 0:
+		return "protecao=desligada conversao=nao_iniciada"
+	case prot == 0 && (conv == 1 || conv == 2 || conv == 4):
+		return "protecao=suspensa conversao=" + map[int]string{1: "concluida", 2: "em_andamento", 4: "pausada"}[conv]
+	case conv == 3 || conv == 5:
+		return "protecao=desligada conversao=decifrando"
+	}
+	return fmt.Sprintf("protecao=desconhecida protection_status=%d conversion_status=%d", prot, conv)
 }
 
 // resumo limita e higieniza saída de ferramenta para mensagens de erro.

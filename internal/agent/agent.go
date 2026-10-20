@@ -77,6 +77,8 @@ type Agent struct {
 	goos string
 	// softRun executa o gerenciador de pacotes (winget/apt); trocado por fake nos testes
 	softRun cmdRunner
+	// wingetResolve devolve o caminho absoluto do winget (nil = usa o nome "winget"; testes)
+	wingetResolve func() (string, error)
 	// scriptRun executa o interpretador do script; trocado por fake nos testes
 	scriptRun cmdRunner
 	// wipe: único caminho destrutivo (wipe_remoto); trocado por fake nos testes
@@ -112,6 +114,9 @@ func (ag *Agent) mediaFor(engine string) SessionMedia {
 
 func New(dir string, log *slog.Logger) (*Agent, error) {
 	ag := &Agent{Dir: dir, Log: log, interval: defaultInterval, now: time.Now, exec: runAction, run: runCmd, goos: runtime.GOOS, wipe: realWipe{run: runCmd}, softRun: runCmd, scriptRun: runScript}
+	if runtime.GOOS == "windows" {
+		ag.wingetResolve = resolverWinget
+	}
 	b, err := os.ReadFile(filepath.Join(dir, fileBundle))
 	if err != nil {
 		return nil, fmt.Errorf("bundle do servidor: %w", err)

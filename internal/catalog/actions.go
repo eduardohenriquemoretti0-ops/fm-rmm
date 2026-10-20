@@ -524,10 +524,18 @@ func init() {
 			"windows": psHead + `
 # O agente roda como SYSTEM (sessão 0): LockWorkStation não alcança a sessão do
 # usuário. tsdiscon desconecta a sessão interativa e a tela de bloqueio exige a senha.
+# quser sai com erro (e escreve em stderr) quando NÃO há sessão: isso é "0 sessões",
+# não falha. Roda sob ErrorActionPreference=Continue e olha só a saída.
 $ids = @()
-foreach ($l in @(quser 2>$null | Select-Object -Skip 1)) {
-  $t = ($l -replace '^[>\s]+', '') -split '\s+'
-  foreach ($x in $t | Select-Object -Skip 1) { if ($x -match '^\d+$') { $ids += $x; break } }
+$ErrorActionPreference = 'Continue'
+$q = @(quser 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -notmatch '^\s*$' })
+$ErrorActionPreference = 'Stop'
+# 1 linha só = mensagem "No User exists" (sem sessão); >1 = cabeçalho + sessões (independe de idioma)
+if ($q.Count -gt 1) {
+  foreach ($l in ($q | Select-Object -Skip 1)) {
+    $t = ($l -replace '^[>\s]+', '') -split '\s+'
+    foreach ($x in $t | Select-Object -Skip 1) { if ($x -match '^\d+$') { $ids += $x; break } }
+  }
 }
 foreach ($i in $ids) { tsdiscon $i }
 Write-Output ("sessoes_travadas=" + $ids.Count)

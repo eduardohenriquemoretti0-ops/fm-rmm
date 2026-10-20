@@ -20,6 +20,20 @@ package agent
 //     repositório (InRelease/GPG) e os hashes dos .deb. Os campos publisher e
 //     sha256 do item são informativos/auditoria: o agente NÃO os usa para
 //     autorizar nada.
+//   - winget sob SYSTEM (LIMITAÇÃO CONHECIDA DA MICROSOFT): o agente roda como
+//     SYSTEM/Session 0, e o winget é o App Installer (MSIX, instalado por
+//     usuário): não está no PATH do SYSTEM. Por isso resolverWinget procura
+//     %ProgramFiles%\WindowsApps\Microsoft.DesktopAppInstaller_*_8wekyb3d8bbwe\winget.exe
+//     (maior versão) e o exec usa o caminho ABSOLUTO. Mesmo assim, o winget.exe do
+//     MSIX pode morrer sob SYSTEM com 0xc0000135 (STATUS_DLL_NOT_FOUND, falta o
+//     contexto de pacote do usuário); nesse caso o erro devolvido é explícito
+//     (dicaWinget). Alternativas, se isso ocorrer em produção (mudança de
+//     arquitetura, NÃO implementada aqui): (a) executar o winget no contexto do
+//     usuário logado (token da sessão via WTSQueryUserToken+CreateProcessAsUser,
+//     helper em Session 1); (b) API COM/PowerShell Microsoft.WinGet.Client
+//     (módulo Repair-WinGetPackageManager / -Scope machine); (c) instalar via
+//     MSI/EXE do fornecedor com hash. O gancho é ag.wingetResolve/ag.softRun:
+//     troque o executor sem mexer na trava de catálogo.
 //   - Executor injetável (ag.softRun): os testes usam fake; nenhum teste instala.
 
 import (
@@ -30,6 +44,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -213,12 +230,106 @@ func (ag *Agent) softwareAcao(ctx context.Context, a catalog.Action, p proto.Job
 	}
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
 	defer cancel()
+	if cmd.Name == "winget" && ag.wingetResolve != nil {
+		exe, err := ag.wingetResolve()
+		if err != nil {
+			log.Error("software FALHOU", "erro", err.Error())
+			return "", fmt.Errorf("%s falhou (%s): %v", a.Name, it.ID, err)
+		}
+		cmd.Name = exe
+	}
 	log.Info("software EXECUTANDO", "comando", cmd.String())
 	out, err := run(ctx, cmd.Name, cmd.Args...)
 	if err != nil {
 		log.Error("software FALHOU", "erro", err.Error())
-		return "", fmt.Errorf("%s falhou (%s): %v: %s", a.Name, it.ID, err, resumo(out))
+		return "", fmt.Errorf("%s falhou (%s): %v: %s%s", a.Name, it.ID, err, resumo(out), dicaWinget(cmd.Name, err, out))
 	}
 	log.Info("software CONCLUÍDO")
 	return fmt.Sprintf("%s item=%s pkg=%s gerenciador=%s %s", op, it.ID, it.PkgID, it.Gerenciador, resumo(out)), nil
+}
+
+// dicaWinget acrescenta uma explicação quando o winget morre com 0xc0000135
+// (STATUS_DLL_NOT_FOUND = 3221225781), sintoma de MSIX rodando sob SYSTEM.
+func dicaWinget(nome string, err error, out string) string {
+	if !strings.Contains(strings.ToLower(filepath.Base(nome)), "winget") {
+		return ""
+	}
+	t := strings.ToLower(err.Error() + " " + out)
+	if strings.Contains(t, "0xc0000135") || strings.Contains(t, "3221225781") {
+		return " [winget (MSIX) não executa sob SYSTEM/Session 0: limitação da Microsoft; ver cabeçalho de software.go para as alternativas]"
+	}
+	return ""
+}
+
+// resolverWingetEm acha o winget.exe: primeiro o App Installer em
+// <windowsApps>\Microsoft.DesktopAppInstaller_<versão>_*\winget.exe (maior
+// versão), depois lookPath("winget"). Devolve caminho ABSOLUTO.
+func resolverWingetEm(windowsApps string, lookPath func(string) (string, error)) (string, error) {
+	dirs, _ := filepath.Glob(filepath.Join(windowsApps, "Microsoft.DesktopAppInstaller_*"))
+	best, bestV := "", []int(nil)
+	for _, d := range dirs {
+		exe := filepath.Join(d, "winget.exe")
+		if st, err := os.Stat(exe); err != nil || st.IsDir() {
+			continue
+		}
+		v := versaoPacoteMSIX(filepath.Base(d))
+		if v == nil {
+			continue
+		}
+		if best == "" || cmpVersao(v, bestV) > 0 {
+			best, bestV = exe, v
+		}
+	}
+	if best != "" {
+		return best, nil
+	}
+	if p, err := lookPath("winget"); err == nil && filepath.IsAbs(p) {
+		return p, nil
+	}
+	return "", errors.New("winget não encontrado (nem em WindowsApps\\Microsoft.DesktopAppInstaller_*, nem no PATH): instale/atualize o App Installer; sob SYSTEM o MSIX pode estar inacessível (ver cabeçalho de software.go)")
+}
+
+// resolverWinget usa o %ProgramFiles% real do SO.
+func resolverWinget() (string, error) {
+	pf := os.Getenv("ProgramFiles")
+	if pf == "" {
+		pf = `C:\Program Files`
+	}
+	return resolverWingetEm(filepath.Join(pf, "WindowsApps"), exec.LookPath)
+}
+
+// versaoPacoteMSIX extrai [1 24 25200 0] de "Microsoft.DesktopAppInstaller_1.24.25200.0_x64__8wekyb3d8bbwe".
+func versaoPacoteMSIX(nome string) []int {
+	partes := strings.Split(nome, "_")
+	if len(partes) < 2 {
+		return nil
+	}
+	var v []int
+	for _, n := range strings.Split(partes[1], ".") {
+		i, err := strconv.Atoi(n)
+		if err != nil {
+			return nil
+		}
+		v = append(v, i)
+	}
+	return v
+}
+
+func cmpVersao(a, b []int) int {
+	for i := 0; i < max(len(a), len(b)); i++ {
+		var x, y int
+		if i < len(a) {
+			x = a[i]
+		}
+		if i < len(b) {
+			y = b[i]
+		}
+		if x != y {
+			if x > y {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
 }

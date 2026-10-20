@@ -19,7 +19,9 @@ const chaveFalsa = "111111-222222-333333-444444-555555-666666-777777-888888"
 // a saída do -add/-get IMPRIME a chave (como o real). Registra os comandos.
 type runnerBitLocker struct {
 	temProtetor bool
-	protegido   string
+	protegido   string // "prot;conv" devolvido pelo WMI simulado
+	aposOn      string // estado após manage-bde -on ("" = 1;2, cifrando)
+	onSaida     string
 	cmds        []string
 }
 
@@ -38,7 +40,11 @@ func (r *runnerBitLocker) run(_ context.Context, name string, args ...string) (s
 	case name == "powershell":
 		return r.protegido, nil
 	case name == "manage-bde" && strings.Contains(j, "-on"):
-		return "ok", nil
+		r.protegido = r.aposOn
+		if r.protegido == "" {
+			r.protegido = "1;2"
+		}
+		return "ok" + r.onSaida, nil
 	}
 	return "", nil
 }
@@ -61,7 +67,7 @@ func (l *lab) agenteEscrow(t *testing.T, comPub bool) (*Agent, string) {
 func TestEscrowRoundtripEFluxoDeDados(t *testing.T) {
 	l := newLab(t)
 	ag, priv := l.agenteEscrow(t, true)
-	r := &runnerBitLocker{protegido: "0"}
+	r := &runnerBitLocker{protegido: "0;0"}
 	ag.run, ag.goos = r.run, "windows"
 
 	id := l.job(ag.state.AgentID, "forcar_criptografia", nil)
@@ -119,7 +125,7 @@ func TestEscrowRoundtripEFluxoDeDados(t *testing.T) {
 func TestEscrowSemPubFalhaAntesDeMexerNoDisco(t *testing.T) {
 	l := newLab(t)
 	ag, _ := l.agenteEscrow(t, false)
-	r := &runnerBitLocker{protegido: "0"}
+	r := &runnerBitLocker{protegido: "0;0"}
 	ag.run, ag.goos = r.run, "windows"
 	id := l.job(ag.state.AgentID, "forcar_criptografia", nil)
 	_ = ag.CheckinOnce(context.Background())
@@ -138,7 +144,7 @@ func TestEscrowSemPubFalhaAntesDeMexerNoDisco(t *testing.T) {
 func TestEscrowReaproveitaChaveEJaAtiva(t *testing.T) {
 	l := newLab(t)
 	ag, priv := l.agenteEscrow(t, true)
-	r := &runnerBitLocker{temProtetor: true, protegido: "1"}
+	r := &runnerBitLocker{temProtetor: true, protegido: "1;1"}
 	ag.run, ag.goos = r.run, "windows"
 	l.job(ag.state.AgentID, "forcar_criptografia", nil)
 	_ = ag.CheckinOnce(context.Background())
@@ -251,4 +257,18 @@ func TestAcaoNativaNaoRodaComoScript(t *testing.T) {
 func runActionNativaParaTeste() (string, int, bool, error) {
 	a, _ := catalog.Get("forcar_criptografia")
 	return runAction(context.Background(), a, nil)
+}
+
+// BitLocker pendente de reboot (teste de hardware do TPM): NÃO pode dizer ligada.
+func TestEscrowPendenteRebootNaoMente(t *testing.T) {
+	l := newLab(t)
+	ag, _ := l.agenteEscrow(t, true)
+	r := &runnerBitLocker{protegido: "0;0", aposOn: "0;0", onSaida: " Reinicie o computador para continuar"}
+	ag.run, ag.goos = r.run, "windows"
+	id := l.job(ag.state.AgentID, "forcar_criptografia", nil)
+	_ = ag.CheckinOnce(context.Background())
+	st, res := l.jobStatus(id)
+	if st != "done" || !strings.Contains(res.Output, "protecao=pendente_reboot") || strings.Contains(res.Output, "protecao=ligada") {
+		t.Fatalf("estado mentiu: %s %+v", st, res)
+	}
 }
