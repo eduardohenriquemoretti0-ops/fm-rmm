@@ -154,3 +154,68 @@ export interface RespostaAcao {
 export interface RespostaChave {
   readonly key_id: string;
 }
+
+/** Tipos de campo que a UI sabe montar (internal/console/listas.go). */
+export type TipoParam =
+  | 'texto'
+  | 'lista'
+  | 'item_catalogo_software'
+  | 'script_biblioteca_id'
+  | 'script_biblioteca_versao'
+  | 'confirmacao_destrutiva';
+
+/** Param de uma ação de GET /api/acoes-disponiveis. */
+export interface ParamAcao {
+  readonly nome: string;
+  readonly rotulo: string;
+  readonly obrigatorio: boolean;
+  readonly tipo: TipoParam;
+  readonly valores_por_so?: Readonly<Record<string, ReadonlyArray<string>>>;
+  /** Só em confirmacao_destrutiva: ex. "WIPE-{agent_id}". */
+  readonly formato?: string;
+}
+
+/** Ação de escrita de GET /api/acoes-disponiveis. */
+export interface AcaoDisponivel {
+  readonly nome: string;
+  readonly rotulo: string;
+  readonly origem: 'agente' | 'bmc';
+  readonly rota: string;
+  readonly destrutiva: boolean;
+  readonly exige_step_up: boolean;
+  readonly so?: ReadonlyArray<string>;
+  readonly params: ReadonlyArray<ParamAcao>;
+}
+
+/** Item de GET /api/catalogo-software (sem pkg_id/hash). */
+export interface ItemSoftware {
+  readonly id: string;
+  readonly nome: string;
+  readonly gerenciador: string;
+}
+
+/** Item de GET /api/biblioteca-scripts (sem corpo). */
+export interface ScriptBiblioteca {
+  readonly id: string;
+  readonly nome: string;
+  readonly versao: string;
+  readonly interprete: string;
+}
+
+/** Corpo de POST /api/bmc/power|status. usuario/senha só existem durante a chamada. */
+export interface CorpoBmc {
+  readonly host: string;
+  readonly porta: number;
+  readonly system_id: string;
+  readonly acao: string;
+  readonly usuario: string;
+  readonly senha: string;
+}
+
+/** Resposta (sem segredo) de /api/bmc/*. */
+export interface RespostaBmc {
+  readonly resultado: string;
+  readonly host?: string;
+  readonly acao?: string;
+  readonly estado?: { readonly power_state: string; readonly health?: string; readonly modelo?: string };
+}

@@ -16,6 +16,15 @@ import { useSessao } from '../auth/sessao';
 import { filtrarAgentes } from './filtro';
 import { TabelaAgentes } from './TabelaAgentes';
 import { PainelVulns } from './PainelVulns';
+import { PainelAcoes } from './PainelAcoes';
+import { PainelBmc } from './PainelBmc';
+import {
+  listarAcoesDisponiveis,
+  listarBibliotecaScripts,
+  listarCatalogoSoftware,
+} from '../api/endpoints';
+import type { AcaoDisponivel } from '../api/tipos';
+import type { ListasFormulario } from '../acoes/formulario';
 
 type Carga =
   | { readonly fase: 'carregando' }
@@ -34,6 +43,31 @@ export function GridAgentes() {
   const [recarga, setRecarga] = useState(0);
   const [aviso, setAviso] = useState<string | null>(null);
   const [detalhe, setDetalhe] = useState<Agente | null>(null);
+  const [agenteAcoes, setAgenteAcoes] = useState<Agente | null>(null);
+  const [acoes, setAcoes] = useState<AcaoDisponivel[]>([]);
+  const [listas, setListas] = useState<ListasFormulario>({ software: [], scripts: [] });
+  const [avisoAcoes, setAvisoAcoes] = useState<string | null>(null);
+
+  // Ações de escrita + listas (catálogo/biblioteca) que alimentam os dropdowns.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    (async () => {
+      try {
+        const [a, software, scripts] = await Promise.all([
+          listarAcoesDisponiveis(ctrl.signal),
+          listarCatalogoSoftware(ctrl.signal),
+          listarBibliotecaScripts(ctrl.signal),
+        ]);
+        setAcoes(a);
+        setListas({ software, scripts });
+        setAvisoAcoes(null);
+      } catch (erro: unknown) {
+        if (erro instanceof DOMException && erro.name === 'AbortError') return;
+        setAvisoAcoes('Não foi possível carregar as ações disponíveis.');
+      }
+    })();
+    return () => ctrl.abort();
+  }, [recarga]);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -151,7 +185,22 @@ export function GridAgentes() {
             aoConectar={(a) => void rodar(() => conectarAgente(a, ctx))}
             aoEnviarInfo={(a) => void rodar(() => enviarJobInfo(a, ctx))}
             aoVerVulns={(a) => setDetalhe(a)}
+            aoAbrirAcoes={(a) => setAgenteAcoes(a)}
           />
+          {avisoAcoes !== null && <p role="status">{avisoAcoes}</p>}
+          {agenteAcoes !== null && (
+            <PainelAcoes
+              key={agenteAcoes.id}
+              agente={agenteAcoes}
+              acoes={acoes}
+              listas={listas}
+              ctx={ctx}
+              aoFechar={() => setAgenteAcoes(null)}
+            />
+          )}
+          {acoes.filter((a) => a.origem === 'bmc').map((a) => (
+            <PainelBmc key={a.nome} acao={a} />
+          ))}
           {detalhe !== null && (
             <PainelVulns
               agenteId={detalhe.id}

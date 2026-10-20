@@ -18,11 +18,13 @@ export function TabelaAgentes({
   aoConectar,
   aoEnviarInfo,
   aoVerVulns,
+  aoAbrirAcoes,
 }: {
   readonly agentes: ReadonlyArray<Agente>;
   readonly aoConectar: (agente: Agente) => void;
   readonly aoEnviarInfo?: (agente: Agente) => void;
   readonly aoVerVulns?: (agente: Agente) => void;
+  readonly aoAbrirAcoes?: (agente: Agente) => void;
 }) {
   return (
     <div className="tabela-rolagem">
@@ -85,6 +87,11 @@ export function TabelaAgentes({
                 {aoVerVulns !== undefined && (
                   <button type="button" data-acao="vulns" onClick={() => aoVerVulns(a)}>
                     CVEs
+                  </button>
+                )}
+                {aoAbrirAcoes !== undefined && (
+                  <button type="button" data-acao="acoes" onClick={() => aoAbrirAcoes(a)}>
+                    Ações
                   </button>
                 )}
                 {aoEnviarInfo !== undefined && (

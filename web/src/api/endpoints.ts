@@ -4,7 +4,13 @@
  */
 import { chamarApi, ErroApi } from './cliente';
 import type {
+  AcaoDisponivel,
   Agente,
+  CorpoBmc,
+  ItemSoftware,
+  ParamAcao,
+  RespostaBmc,
+  ScriptBiblioteca,
   ItemVuln,
   NaoAvaliado,
   OpcoesAsercaoJSON,
@@ -286,4 +292,117 @@ export async function finalizarRegistro(
   });
   if (!ehRegistro(r) || !ehTexto(r.credencial)) throw formaInvalida();
   return r.credencial;
+}
+
+const TIPOS_PARAM: ReadonlyArray<string> = [
+  'texto',
+  'lista',
+  'item_catalogo_software',
+  'script_biblioteca_id',
+  'script_biblioteca_versao',
+  'confirmacao_destrutiva',
+];
+
+function ehMapaListas(x: unknown): x is Record<string, string[]> {
+  return (
+    ehRegistro(x) && Object.values(x).every((v) => Array.isArray(v) && v.every(ehTexto))
+  );
+}
+
+function ehParamAcao(x: unknown): x is ParamAcao {
+  return (
+    ehRegistro(x) &&
+    ehTexto(x.nome) &&
+    ehTexto(x.rotulo) &&
+    typeof x.obrigatorio === 'boolean' &&
+    ehTexto(x.tipo) &&
+    TIPOS_PARAM.includes(x.tipo) &&
+    (x.valores_por_so === undefined || ehMapaListas(x.valores_por_so)) &&
+    (x.formato === undefined || ehTexto(x.formato))
+  );
+}
+
+export function ehAcaoDisponivel(x: unknown): x is AcaoDisponivel {
+  return (
+    ehRegistro(x) &&
+    ehTexto(x.nome) &&
+    ehTexto(x.rotulo) &&
+    (x.origem === 'agente' || x.origem === 'bmc') &&
+    ehTexto(x.rota) &&
+    typeof x.destrutiva === 'boolean' &&
+    typeof x.exige_step_up === 'boolean' &&
+    (x.so === undefined || (Array.isArray(x.so) && x.so.every(ehTexto))) &&
+    Array.isArray(x.params) &&
+    x.params.every(ehParamAcao)
+  );
+}
+
+/** GET /api/acoes-disponiveis — ações de escrita + metadados de formulário. */
+export async function listarAcoesDisponiveis(signal?: AbortSignal): Promise<AcaoDisponivel[]> {
+  const r = await chamarApi('/api/acoes-disponiveis', signal ? { signal } : {});
+  if (!ehRegistro(r) || !Array.isArray(r.acoes) || !r.acoes.every(ehAcaoDisponivel)) {
+    throw formaInvalida();
+  }
+  return r.acoes;
+}
+
+/** GET /api/catalogo-software — itens publicados (id/nome/gerenciador). */
+export async function listarCatalogoSoftware(signal?: AbortSignal): Promise<ItemSoftware[]> {
+  const r = await chamarApi('/api/catalogo-software', signal ? { signal } : {});
+  if (
+    !ehRegistro(r) ||
+    !Array.isArray(r.itens) ||
+    !r.itens.every((i) => ehRegistro(i) && ehTexto(i.id) && ehTexto(i.nome) && ehTexto(i.gerenciador))
+  ) {
+    throw formaInvalida();
+  }
+  return (r.itens as ItemSoftware[]).map((i) => ({ id: i.id, nome: i.nome, gerenciador: i.gerenciador }));
+}
+
+/** GET /api/biblioteca-scripts — scripts publicados (sem corpo). */
+export async function listarBibliotecaScripts(signal?: AbortSignal): Promise<ScriptBiblioteca[]> {
+  const r = await chamarApi('/api/biblioteca-scripts', signal ? { signal } : {});
+  if (
+    !ehRegistro(r) ||
+    !Array.isArray(r.scripts) ||
+    !r.scripts.every(
+      (s) =>
+        ehRegistro(s) && ehTexto(s.id) && ehTexto(s.nome) && ehTexto(s.versao) && ehTexto(s.interprete),
+    )
+  ) {
+    throw formaInvalida();
+  }
+  return (r.scripts as ScriptBiblioteca[]).map((s) => ({
+    id: s.id,
+    nome: s.nome,
+    versao: s.versao,
+    interprete: s.interprete,
+  }));
+}
+
+/**
+ * POST /api/bmc/power|status. A credencial vai SÓ no corpo desta requisição
+ * (JSON em memória); nada é gravado nem logado aqui.
+ */
+export async function chamarBmc(
+  rota: 'power' | 'status',
+  corpo: CorpoBmc,
+): Promise<RespostaBmc> {
+  const r = await chamarApi(`/api/bmc/${rota}`, { metodo: 'POST', corpo });
+  if (!ehRegistro(r) || !ehTexto(r.resultado)) throw formaInvalida();
+  const e = r.estado;
+  return {
+    resultado: r.resultado,
+    ...(ehTexto(r.host) ? { host: r.host } : {}),
+    ...(ehTexto(r.acao) ? { acao: r.acao } : {}),
+    ...(ehRegistro(e) && ehTexto(e.power_state)
+      ? {
+          estado: {
+            power_state: e.power_state,
+            ...(ehTexto(e.health) ? { health: e.health } : {}),
+            ...(ehTexto(e.modelo) ? { modelo: e.modelo } : {}),
+          },
+        }
+      : {}),
+  };
 }

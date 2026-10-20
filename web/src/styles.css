@@ -122,3 +122,18 @@ input[type='search'] {
 .registro { max-width: 34rem; margin: 10vh auto; padding: 1rem; text-align: center; }
 .registro ol { text-align: left; }
 .link { background: none; border: none; text-decoration: underline; cursor: pointer; color: inherit; }
+
+/* Painel de ações */
+.painel-acoes { margin-top: 1rem; padding: 0.75rem; border: 1px solid #888; border-radius: 4px; }
+.lista-acoes { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.acao-form { display: grid; gap: 0.5rem; max-width: 36rem; }
+.acao-form .campo { display: grid; gap: 0.2rem; }
+.acao-destrutiva { border: 2px solid #b00020; padding: 0.75rem; background: #fdecea; }
+.aviso-destrutivo { color: #b00020; font-weight: bold; }
+button.perigo { background: #b00020; color: #fff; border-color: #7a0016; }
+button.perigo:disabled { opacity: 0.5; cursor: not-allowed; }
+.perigo-caixa { border: 3px solid #b00020; }
+.dialogo-fundo { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); display: grid; place-items: center; z-index: 10; }
+.dialogo { background: #fff; color: #000; padding: 1.5rem; max-width: 32rem; border-radius: 6px; }
+.dialogo button { margin-right: 0.5rem; }
+.motivo-bloqueio { color: #555; }
