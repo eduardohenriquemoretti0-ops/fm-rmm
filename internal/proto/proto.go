@@ -60,6 +60,13 @@ type SignedSignerList struct {
 	Sig []byte `json:"sig"`
 }
 
+// SignedSoftwareCatalog é o catálogo de software (allow-list) assinado pela
+// chave RAIZ offline. Mesmo formato de SignedSignerList.
+type SignedSoftwareCatalog struct {
+	Raw []byte `json:"raw"`
+	Sig []byte `json:"sig"`
+}
+
 type CheckinResponse struct {
 	Jobs        []SignedJob   `json:"jobs"`
 	Grants      []SignedGrant `json:"grants,omitempty"` // sessões remotas autorizadas
@@ -67,6 +74,9 @@ type CheckinResponse struct {
 	// Lista é a lista de signers corrente (omitida se o servidor ainda não tem uma).
 	// O agente ingere e aplica anti-downgrade; lista repetida é o caso normal.
 	Lista *SignedSignerList `json:"lista,omitempty"`
+	// Software é o catálogo de software corrente (omitido se não há). O agente
+	// verifica contra a raiz e aplica anti-downgrade; repetido é o caso normal.
+	Software *SignedSoftwareCatalog `json:"software,omitempty"`
 }
 
 // Result é o retorno de um job. Autenticado pelo mTLS do agente.

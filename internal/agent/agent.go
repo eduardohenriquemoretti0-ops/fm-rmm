@@ -63,6 +63,7 @@ type Agent struct {
 	bundle   proto.Bundle
 	signer   ed25519.PublicKey // chave raiz (bundle): âncora do trust-set
 	trust    *trustStore       // raiz + signers da lista assinada (T5a)
+	soft     *softStore        // catálogo de software assinado (allow-list)
 	caPool   *x509.CertPool
 	state    State
 	seen     *seenStore
@@ -73,6 +74,8 @@ type Agent struct {
 	// run/goos: execução de comandos do fluxo nativo de escrow (trocáveis nos testes)
 	run  cmdRunner
 	goos string
+	// softRun executa o gerenciador de pacotes (winget/apt); trocado por fake nos testes
+	softRun cmdRunner
 	// wipe: único caminho destrutivo (wipe_remoto); trocado por fake nos testes
 	wipe WipeExecutor
 	// acesso remoto (opcional): sem os dois, concessões de sessão são recusadas
@@ -105,7 +108,7 @@ func (ag *Agent) mediaFor(engine string) SessionMedia {
 }
 
 func New(dir string, log *slog.Logger) (*Agent, error) {
-	ag := &Agent{Dir: dir, Log: log, interval: defaultInterval, now: time.Now, exec: runAction, run: runCmd, goos: runtime.GOOS, wipe: realWipe{run: runCmd}}
+	ag := &Agent{Dir: dir, Log: log, interval: defaultInterval, now: time.Now, exec: runAction, run: runCmd, goos: runtime.GOOS, wipe: realWipe{run: runCmd}, softRun: runCmd}
 	b, err := os.ReadFile(filepath.Join(dir, fileBundle))
 	if err != nil {
 		return nil, fmt.Errorf("bundle do servidor: %w", err)
@@ -132,6 +135,9 @@ func New(dir string, log *slog.Logger) (*Agent, error) {
 		return nil, err
 	}
 	if ag.trust, err = openTrust(filepath.Join(dir, fileTrust), ag.signer, time.Now(), log); err != nil {
+		return nil, err
+	}
+	if ag.soft, err = openSoft(filepath.Join(dir, fileSoftware), ag.signer, log); err != nil {
 		return nil, err
 	}
 	ag.enableRustDesk()
@@ -317,6 +323,9 @@ func (ag *Agent) CheckinOnce(ctx context.Context) error {
 	// lista de signers corrente (trust-set): ingerida ANTES dos jobs desta resposta
 	if resp.Lista != nil {
 		ag.aplicarListaDoCheckin(resp.Lista)
+	}
+	if resp.Software != nil {
+		ag.aplicarSoftwareDoCheckin(resp.Software)
 	}
 	if resp.IntervalSec >= 10 && resp.IntervalSec <= 3600 {
 		ag.interval = time.Duration(resp.IntervalSec) * time.Second

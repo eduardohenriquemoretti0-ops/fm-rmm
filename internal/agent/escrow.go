@@ -48,6 +48,12 @@ func (ag *Agent) runNative(ctx context.Context, a catalog.Action, p proto.JobPay
 			return "", 1, nil, errors.New(escrow.Redigir(err.Error()))
 		}
 		return out, 0, rec, nil
+	case "instalar_pacote", "desinstalar_pacote":
+		out, err := ag.softwareAcao(ctx, a, p)
+		if err != nil {
+			return "", 1, nil, err
+		}
+		return out, 0, nil, nil
 	case "wipe_remoto":
 		out, err := ag.wipeRemoto(ctx, a, p)
 		if err != nil {

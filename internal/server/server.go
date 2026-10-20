@@ -244,6 +244,12 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	} else if v > 0 {
 		resp.Lista = &proto.SignedSignerList{Raw: raw, Sig: sig}
 	}
+	// catálogo de software publicado: o agente verifica contra a raiz e guarda
+	if v, raw, sig, err := s.Store.catalogoSoftwareAtual(); err != nil {
+		s.Log.Error("catálogo de software", "agente", a.ID, "erro", err)
+	} else if v > 0 {
+		resp.Software = &proto.SignedSoftwareCatalog{Raw: raw, Sig: sig}
+	}
 	tsJobs := s.confiancaEntrega()
 	for _, j := range jobs {
 		var sj proto.SignedJob

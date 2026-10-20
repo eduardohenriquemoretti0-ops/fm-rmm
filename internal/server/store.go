@@ -93,6 +93,10 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("banco (listas de signers): %w", err)
 	}
+	if err := st.initCatalogoSoftware(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("banco (catálogo de software): %w", err)
+	}
 	if err := st.initAcoes(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("banco (ações de operador): %w", err)

@@ -575,3 +575,32 @@ exit 3
 		Scripts: map[string]string{"windows": "", "linux": ""}, // darwin: sem suporte (MDM)
 	})
 }
+
+// instalar_pacote / desinstalar_pacote: ações NATIVAS do catálogo de software.
+//
+// O ÚNICO parâmetro é item_id: o id de um item da allow-list assinada pela raiz
+// (sign.SoftwareCatalog). Não existe parâmetro pkg_id, nome de pacote nem
+// comando: o agente resolve o item no catálogo confiável local e RECUSA se ele
+// não existir. O Pattern de item_id reflete sign.ItemIDValido (minúsculas,
+// dígitos, '.', '-'; nunca começa com '-') e ainda passa pelo alfabeto
+// anti-injeção de Validate.
+const itemIDPattern = `[a-z0-9][a-z0-9.-]{0,47}`
+
+func init() {
+	for _, n := range []struct{ nome, desc string }{
+		{"instalar_pacote", "Instala um item da lista de software aprovada (catálogo assinado pelo admin); o operador escolhe o item, nunca o pacote"},
+		{"desinstalar_pacote", "Remove um item da lista de software aprovada (catálogo assinado pelo admin); o operador escolhe o item, nunca o pacote"},
+	} {
+		register(Action{
+			Name:    n.nome,
+			Desc:    n.desc,
+			Changes: true,
+			Native:  true,
+			Timeout: 30 * time.Minute,
+			Params: map[string]Param{
+				"item_id": {Desc: "id do item no catálogo de software aprovado", Pattern: itemIDPattern},
+			},
+			Scripts: map[string]string{"windows": "", "linux": ""},
+		})
+	}
+}
