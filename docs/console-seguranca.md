@@ -202,7 +202,11 @@ de admin (raiz) continua **100% offline**.
 Resposta a Perda/Roubo autorizada. Ambas são ações **assinadas** (job assinado no navegador, trust-set no agente).
 
 - `lock_remoto` (reversível): Windows `tsdiscon` nas sessões interativas (o agente roda como SYSTEM; `LockWorkStation` não alcança a sessão do usuário); opcional `exigir_recuperacao=sim` -> `manage-bde -forcerecovery` (pede a chave de recuperação do escrow 3d-1 no próximo boot). Linux `loginctl lock-sessions`; macOS `CGSession -suspend`/`pmset displaysleepnow`.
-- `wipe_remoto` (**irreversível**, `Destructive`): cripto-erase. Remove os protetores BitLocker (`manage-bde -protectors -delete`) / destrói os keyslots LUKS (`cryptsetup luksErase`) e desliga a máquina. Não sobrescreve o disco. Disco não cifrado -> recusa (nada apagado); macOS sem suporte (use MDM).
+- `wipe_remoto` (**irreversível**, `Destructive`): cripto-erase REAL.
+  - **Windows/BitLocker**: `manage-bde -protectors -delete` NÃO apaga nada (prova em runtime, VM win10: ao remover o último protetor o Windows insere uma *clear key* e o SO continua bootando). O plano agora: (1) `-protectors -add -RecoveryPassword <48 dígitos aleatórios>` (gerada com crypto/rand, descartada, nunca logada nem devolvida); (2) `-protectors -delete -id {GUID}` para cada protetor pré-existente (TPM, recovery do escrow...); (3) verificação por CIM de que sobrou exatamente 1 protetor, do tipo senha numérica (senão `wipe INEFETIVO`, sem desligar); (4) `shutdown`. No próximo boot cai na tela de recuperação e ninguém tem a chave. Ainda a validar em runtime na VM.
+  - **Linux/LUKS**: `cryptsetup luksErase` (sobrescreve todos os keyslots) + verificação por `luksDump` + shutdown. Limitação: em SSD/NVMe o wear leveling pode manter cópia física antiga do keyslot; /boot, swap e partições não-LUKS não são tocados.
+  - Disco não cifrado -> recusa (nada apagado); macOS sem suporte (use MDM).
+  - Limites: o cripto-erase deixa os bytes cifrados no disco (seguro enquanto a cifra AES e a senha de 128 bits resistirem) e não remove cópias da recovery key fora do agente (AD/Entra/backup do operador ficam inválidas, pois o protetor foi deletado).
 
 Gate do wipe (qualquer falha = recusa auditada, nada executado):
 
