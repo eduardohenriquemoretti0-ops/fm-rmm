@@ -79,6 +79,9 @@ type Agent struct {
 	softRun cmdRunner
 	// wingetResolve devolve o caminho absoluto do winget (nil = usa o nome "winget"; testes)
 	wingetResolve func() (string, error)
+	// wingetUserRun executa o winget NA SESSÃO DO USUÁRIO LOGADO (Windows). nil =
+	// usa softRun (testes e SOs sem winget). apt nunca passa por aqui.
+	wingetUserRun cmdRunner
 	// scriptRun executa o interpretador do script; trocado por fake nos testes
 	scriptRun cmdRunner
 	// wipe: único caminho destrutivo (wipe_remoto); trocado por fake nos testes
@@ -116,6 +119,7 @@ func New(dir string, log *slog.Logger) (*Agent, error) {
 	ag := &Agent{Dir: dir, Log: log, interval: defaultInterval, now: time.Now, exec: runAction, run: runCmd, goos: runtime.GOOS, wipe: realWipe{run: runCmd}, softRun: runCmd, scriptRun: runScript}
 	if runtime.GOOS == "windows" {
 		ag.wingetResolve = resolverWinget
+		ag.wingetUserRun = runInUserSession
 	}
 	b, err := os.ReadFile(filepath.Join(dir, fileBundle))
 	if err != nil {

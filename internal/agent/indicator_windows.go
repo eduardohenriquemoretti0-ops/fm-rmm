@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -82,46 +81,15 @@ func helperPath() (string, error) {
 // launchInUserSession roda exe na sessão de console ativa (a do usuário logado),
 // passando addr/token/msg. Devolve o handle do processo para Stop derrubá-lo.
 func launchInUserSession(exe, addr, token, msg string) (windows.Handle, error) {
-	sess := windows.WTSGetActiveConsoleSessionId()
-	if sess == 0xFFFFFFFF {
-		return 0, fmt.Errorf("nenhuma sessão de console ativa (ninguém logado)")
-	}
-
-	var userTok windows.Token
-	if err := windows.WTSQueryUserToken(sess, &userTok); err != nil {
-		return 0, fmt.Errorf("WTSQueryUserToken: %w", err)
-	}
-	defer userTok.Close()
-
-	var primary windows.Token
-	if err := windows.DuplicateTokenEx(userTok, windows.TOKEN_ALL_ACCESS, nil,
-		windows.SecurityImpersonation, windows.TokenPrimary, &primary); err != nil {
-		return 0, fmt.Errorf("DuplicateTokenEx: %w", err)
-	}
-	defer primary.Close()
-
-	var envBlock *uint16
-	if err := windows.CreateEnvironmentBlock(&envBlock, primary, false); err != nil {
-		return 0, fmt.Errorf("CreateEnvironmentBlock: %w", err)
-	}
-	defer windows.DestroyEnvironmentBlock(envBlock)
-
 	// msg vai em base64 para não brigar com aspas na linha de comando
 	msgB64 := base64.StdEncoding.EncodeToString([]byte(msg))
 	cmdline := windows.ComposeCommandLine([]string{exe, addr, token, msgB64})
 
-	desktop, _ := windows.UTF16PtrFromString(`winsta0\default`)
-	appName, _ := windows.UTF16PtrFromString(exe)
-	cmdlinePtr, _ := windows.UTF16PtrFromString(cmdline)
-
-	si := windows.StartupInfo{Desktop: desktop}
-	si.Cb = uint32(unsafe.Sizeof(si))
-	var pi windows.ProcessInformation
-
-	if err := windows.CreateProcessAsUser(primary, appName, cmdlinePtr, nil, nil, false,
-		windows.CREATE_UNICODE_ENVIRONMENT, envBlock, nil, &si, &pi); err != nil {
-		return 0, fmt.Errorf("CreateProcessAsUser: %w", err)
-	}
-	_ = windows.CloseHandle(pi.Thread)
-	return pi.Process, nil
+	var proc windows.Handle
+	err := withUserSession(func(primary windows.Token, envBlock *uint16) error {
+		var err error
+		proc, err = createProcessInSession(primary, envBlock, exe, cmdline, 0, false)
+		return err
+	})
+	return proc, err
 }

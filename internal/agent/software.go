@@ -33,20 +33,23 @@ package agent
 //     mas há uma janela TOCTOU entre os dois downloads que só o hash do
 //     manifesto cobre; (b) apt reaproveita os .deb baixados (Dir::Cache::archives
 //     apontando p/ o diretório verificado), sem novo download.
-//   - winget sob SYSTEM (LIMITAÇÃO CONHECIDA DA MICROSOFT): o agente roda como
-//     SYSTEM/Session 0, e o winget é o App Installer (MSIX, instalado por
-//     usuário): não está no PATH do SYSTEM. Por isso resolverWinget procura
-//     %ProgramFiles%\WindowsApps\Microsoft.DesktopAppInstaller_*_8wekyb3d8bbwe\winget.exe
-//     (maior versão) e o exec usa o caminho ABSOLUTO. Mesmo assim, o winget.exe do
-//     MSIX pode morrer sob SYSTEM com 0xc0000135 (STATUS_DLL_NOT_FOUND, falta o
-//     contexto de pacote do usuário); nesse caso o erro devolvido é explícito
-//     (dicaWinget). Alternativas, se isso ocorrer em produção (mudança de
-//     arquitetura, NÃO implementada aqui): (a) executar o winget no contexto do
-//     usuário logado (token da sessão via WTSQueryUserToken+CreateProcessAsUser,
-//     helper em Session 1); (b) API COM/PowerShell Microsoft.WinGet.Client
-//     (módulo Repair-WinGetPackageManager / -Scope machine); (c) instalar via
-//     MSI/EXE do fornecedor com hash. O gancho é ag.wingetResolve/ag.softRun:
-//     troque o executor sem mexer na trava de catálogo.
+//   - winget roda NO CONTEXTO DO USUÁRIO LOGADO (não sob SYSTEM). O agente é
+//     SYSTEM/Session 0, e o winget é o App Installer (MSIX por usuário): sob
+//     SYSTEM morre com 0xc0000135 (STATUS_DLL_NOT_FOUND). Por isso, em Windows,
+//     todo comando winget (install, uninstall e o "download" do sha256) é
+//     executado por ag.wingetUserRun (runInUserSession, usersession_windows.go):
+//     WTSGetActiveConsoleSessionId + WTSQueryUserToken + DuplicateTokenEx +
+//     CreateProcessAsUser (helper comum withUserSession, o mesmo do indicador),
+//     com stdout/stderr capturados em arquivo temporário, timeout do ctx e exit
+//     code. SEM USUÁRIO LOGADO a ação é RECUSADA com erro claro ("winget exige um
+//     usuário logado; agende quando houver sessão, ou use MSI/machine-scope") e
+//     NUNCA cai para SYSTEM. apt NÃO usa contexto de usuário (roda bem como
+//     root). Consequência: o winget instala com os privilégios/escopo do usuário
+//     (instalador que exige admin pode pedir UAC, que não há sem interação;
+//     preferir pacotes com escopo de usuário ou MSI/machine-scope). resolverWinget
+//     acha o winget.exe do App Installer em WindowsApps (caminho ABSOLUTO).
+//     Testes: wingetUserRun e softRun são injetáveis; o CreateProcessAsUser real
+//     só se valida na VM (roteiro em usersession_windows.go).
 //   - Executor injetável (ag.softRun): os testes usam fake; nenhum teste instala.
 
 import (
@@ -70,6 +73,9 @@ import (
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/proto"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/sign"
 )
+
+// errSemUsuarioLogado: não há sessão interativa para rodar o winget.
+var errSemUsuarioLogado = errors.New("nenhum usuário logado")
 
 // errCatalogoRepetido: mesma versão já aceita (caso normal: o servidor serve
 // o catálogo corrente em todo check-in).
@@ -241,6 +247,9 @@ func (ag *Agent) softwareAcao(ctx context.Context, a catalog.Action, p proto.Job
 		return "", fmt.Errorf("%s recusado: %v", a.Name, err)
 	}
 	run := ag.softRun
+	if it.Gerenciador == sign.GerenciadorWinget && ag.wingetUserRun != nil {
+		run = ag.wingetUserRun // winget: contexto do usuário logado, nunca SYSTEM
+	}
 	if run == nil {
 		return "", errors.New(a.Name + " recusado: executor indisponível")
 	}
@@ -269,6 +278,9 @@ func (ag *Agent) softwareAcao(ctx context.Context, a catalog.Action, p proto.Job
 	out, err := run(ctx, cmd.Name, cmd.Args...)
 	if err != nil {
 		log.Error("software FALHOU", "erro", err.Error())
+		if errors.Is(err, errSemUsuarioLogado) {
+			return "", fmt.Errorf("%s recusado (%s): winget exige um usuário logado; agende quando houver sessão, ou use MSI/machine-scope (%v)", a.Name, it.ID, err)
+		}
 		return "", fmt.Errorf("%s falhou (%s): %v: %s%s", a.Name, it.ID, err, resumo(out), dicaWinget(cmd.Name, err, out))
 	}
 	log.Info("software CONCLUÍDO")
