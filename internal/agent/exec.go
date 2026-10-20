@@ -36,6 +36,10 @@ func (w *capWriter) Write(p []byte) (int, error) {
 // runAction executa o script da ação para este sistema, com timeout e saída
 // limitada. Os parâmetros já passaram por catalog.Validate (lista fechada).
 func runAction(ctx context.Context, a catalog.Action, params map[string]string) (string, int, bool, error) {
+	if a.Native {
+		// ações nativas têm fluxo próprio (ex.: selagem de chave); nunca viram script
+		return "", -1, false, errors.New("ação nativa não executa como script: " + a.Name)
+	}
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout)
 	defer cancel()
 	keys := make([]string, 0, len(params))

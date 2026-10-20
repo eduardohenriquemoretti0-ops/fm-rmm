@@ -70,6 +70,9 @@ type Agent struct {
 	now      func() time.Time
 	// exec é trocável nos testes
 	exec func(ctx context.Context, a catalog.Action, params map[string]string) (string, int, bool, error)
+	// run/goos: execução de comandos do fluxo nativo de escrow (trocáveis nos testes)
+	run  cmdRunner
+	goos string
 	// acesso remoto (opcional): sem os dois, concessões de sessão são recusadas
 	indicator     Indicator
 	media         SessionMedia            // padrão
@@ -100,7 +103,7 @@ func (ag *Agent) mediaFor(engine string) SessionMedia {
 }
 
 func New(dir string, log *slog.Logger) (*Agent, error) {
-	ag := &Agent{Dir: dir, Log: log, interval: defaultInterval, now: time.Now, exec: runAction}
+	ag := &Agent{Dir: dir, Log: log, interval: defaultInterval, now: time.Now, exec: runAction, run: runCmd, goos: runtime.GOOS}
 	b, err := os.ReadFile(filepath.Join(dir, fileBundle))
 	if err != nil {
 		return nil, fmt.Errorf("bundle do servidor: %w", err)
@@ -367,7 +370,15 @@ func (ag *Agent) handleJob(ctx context.Context, sj proto.SignedJob) proto.Result
 	}
 	ag.Log.Info("executando", "job", p.JobID, "acao", p.Action, "emissor", p.Issuer)
 	res := proto.Result{JobID: p.JobID, StartedAt: ag.now()}
-	out, code, trunc, err := ag.exec(ctx, action, p.Params)
+	var out string
+	var code int
+	var trunc bool
+	if action.Native {
+		// ação nativa: intercepta ANTES do pipeline de script
+		out, code, res.Escrow, err = ag.runNative(ctx, action, p)
+	} else {
+		out, code, trunc, err = ag.exec(ctx, action, p.Params)
+	}
 	res.FinishedAt, res.Output, res.ExitCode, res.Truncated = ag.now(), out, code, trunc
 	res.Status = "ok"
 	if err != nil {

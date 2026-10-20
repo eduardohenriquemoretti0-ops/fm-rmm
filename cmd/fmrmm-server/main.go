@@ -48,6 +48,9 @@ Configuração (uma vez):
   keygen   --out admin.key                                 chave de assinatura do ADMIN (guarde fora do servidor)
   bundle   --dir D --url https://rmm.exemplo.com --key admin.key --out bundle.json
                                                            pacote público do agente (CA + chave pública do admin)
+  escrow   gerar --dir D                                   cria escrow.key (PRIVADA, 0600: mova para FORA do servidor) + escrow.pub (init já faz)
+  escrow   listar --dir D [--agent ID] | exportar --dir D --id N   registros de escrow (SÓ ciphertext + metadados)
+  escrow   abrir --escrow-key escrow.key --blob ARQUIVO|-   OFFLINE no admin: decifra o blob e imprime a chave de recuperação
 Operação:
   serve    --dir D [--listen :443] [--relay :8443] [--relay-url wss://rmm.exemplo.com:8443] [--interval 60s]
   token    --dir D [--label X] [--uses 1] [--ttl 24h]      token de inscrição (mostrado uma vez)
@@ -94,6 +97,8 @@ func main() {
 		err = cmdKeygen(args)
 	case "bundle":
 		err = cmdBundle(args)
+	case "escrow":
+		err = cmdEscrow(args)
 	case "serve":
 		err = cmdServe(args)
 	case "token":
@@ -185,11 +190,16 @@ func cmdInit(args []string) error {
 			return err
 		}
 	}
+	escPub, err := gerarEscrow(*dir)
+	if err != nil {
+		return err
+	}
 	st, err := server.OpenStore(filepath.Join(*dir, server.FileDB))
 	if err != nil {
 		return err
 	}
 	defer st.Close()
+	fmt.Printf("escrow: par X25519 criado (pública %s).\nATENÇÃO: mova %s para FORA do servidor (offline, só o admin); o serve não precisa dela.\n", escPub, filepath.Join(*dir, server.FileEscrowKey))
 	fmt.Printf("servidor inicializado em %s\nCA: %s (válida até %s)\ncertificado do servidor para: %s\n", *dir, *name, ca.NotAfter.Format(time.DateOnly), *hosts)
 	return st.Audit("servidor.inicializado", actor(), map[string]any{"hosts": *hosts})
 }
@@ -215,6 +225,8 @@ func cmdBundle(args []string) error {
 	pubFlag := fs.String("signer-pub", "", "OU a chave pública do admin em base64")
 	rdHost := fs.String("rustdesk-host", "", "host do hbbs do RustDesk self-hosted (opcional)")
 	rdKey := fs.String("rustdesk-key", "", "chave pública do hbbs do RustDesk (base64; pinning)")
+	escPubFlag := fs.String("escrow-pub", "", "chave pública de escrow (X25519, base64); padrão: escrow.pub do --dir")
+	escKeyFlag := fs.String("escrow-key", "", "OU a escrow.key (só a pública vai para o bundle)")
 	out := fs.String("out", "bundle.json", "arquivo de saída")
 	fs.Parse(args)
 	if !strings.HasPrefix(*url, "https://") {
@@ -244,7 +256,14 @@ func cmdBundle(args []string) error {
 	if err := server.AddSigner(*dir, pub); err != nil {
 		return err
 	}
-	b, _ := json.MarshalIndent(proto.Bundle{ServerURL: *url, CAPEM: string(caPEM), SignerPub: sign.EncodePub(pub), SignerID: sign.KeyID(pub), RustDeskHost: *rdHost, RustDeskKey: *rdKey}, "", "  ")
+	escrowPub, err := resolverEscrowPub(*dir, *escPubFlag, *escKeyFlag)
+	if err != nil {
+		return err
+	}
+	if escrowPub == "" {
+		fmt.Fprintln(os.Stderr, "aviso: bundle SEM EscrowPub (forcar_criptografia ficará indisponível); rode `escrow gerar` e refaça o bundle")
+	}
+	b, _ := json.MarshalIndent(proto.Bundle{ServerURL: *url, CAPEM: string(caPEM), SignerPub: sign.EncodePub(pub), SignerID: sign.KeyID(pub), EscrowPub: escrowPub, RustDeskHost: *rdHost, RustDeskKey: *rdKey}, "", "  ")
 	if err := os.WriteFile(*out, b, 0o644); err != nil {
 		return err
 	}
@@ -306,6 +325,9 @@ func cmdServe(args []string) error {
 		return errors.New("nenhuma chave de admin cadastrada (rode bundle)")
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if _, err := os.Stat(filepath.Join(*dir, server.FileEscrowKey)); err == nil {
+		log.Warn("escrow.key está no diretório do servidor: mova-a para FORA (offline). O serve não a lê, mas quem invadir o servidor poderia.")
+	}
 	s := &server.Server{Store: st, CA: ca, CAKey: caKey, Signers: signers, Interval: *interval, Log: log}
 	hs := server.NewHTTPServer(*listen, s.Handler(), server.TLSConfig(ca, cert))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

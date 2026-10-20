@@ -33,6 +33,10 @@ type Action struct {
 	Name    string
 	Desc    string
 	Changes bool // altera o estado da máquina (não é só leitura)
+	// Native: a ação NÃO roda script; o agente a trata por código próprio
+	// (ex.: forcar_criptografia, que sela a chave de recuperação). Scripts só
+	// lista os SOs suportados (valores vazios); runAction recusa ações nativas.
+	Native  bool
 	Timeout time.Duration
 	Params  map[string]Param
 	Scripts map[string]string // GOOS -> script (powershell no windows, sh nos demais)

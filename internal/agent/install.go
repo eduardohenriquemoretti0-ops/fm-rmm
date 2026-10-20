@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/escrow"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/pki"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/proto"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/sign"
@@ -100,6 +101,11 @@ func validateBundle(raw []byte) error {
 	}
 	if _, err := sign.DecodePub(b.SignerPub); err != nil {
 		return fmt.Errorf("bundle: %w", err)
+	}
+	if b.EscrowPub != "" {
+		if _, err := escrow.DecodePub(b.EscrowPub); err != nil {
+			return fmt.Errorf("bundle: %w", err)
+		}
 	}
 	if _, err := pki.ParseCertPEM(b.CAPEM); err != nil {
 		return fmt.Errorf("bundle: CA: %w", err)

@@ -434,3 +434,57 @@ else
   exit 3
 fi
 `
+
+// forcar_criptografia: ação NATIVA (sem script). O agente liga/garante a
+// criptografia de disco e SELA a chave de recuperação para a EscrowPub do admin;
+// só o ciphertext chega ao servidor. Por isso não pode ser script genérico
+// (a saída em claro viajaria e seria logada). Changes=true: exige job assinado.
+// Windows: BitLocker (manage-bde). macOS: FileVault (fdesetup). Linux: apenas
+// relata o estado LUKS e instrui (habilitar LUKS em disco em uso é decisão de arquitetura).
+func init() {
+	register(Action{
+		Name:    "forcar_criptografia",
+		Desc:    "Liga a criptografia de disco e entrega a chave de recuperação SELADA ao admin (escrow); a chave em claro nunca sai do agente",
+		Changes: true,
+		Native:  true,
+		Timeout: 10 * time.Minute,
+		Params: map[string]Param{
+			"volume": {
+				Desc:     "volume a proteger (default: volume do sistema)",
+				Optional: true,
+				Allowed: map[string][]string{
+					"windows": {"C", "D", "E", "F"},
+					"linux":   {"root"},
+					"darwin":  {"root"},
+				},
+			},
+		},
+		Scripts: map[string]string{"windows": "", "linux": "", "darwin": ""},
+	})
+
+	register(Action{
+		Name: "cripto_status",
+		Desc: "Estado da criptografia de disco por volume (somente leitura; nunca lê chaves)",
+		Scripts: map[string]string{
+			"windows": psHead + `
+@(Get-CimInstance -Namespace 'root\cimv2\Security\MicrosoftVolumeEncryption' -ClassName Win32_EncryptableVolume |
+  ForEach-Object { [pscustomobject]@{ volume = $_.DriveLetter; protegido = ($_.ProtectionStatus -eq 1); criptografia = if ($_.ProtectionStatus -eq 1) { 'on' } else { 'off' } } }) |
+  ConvertTo-Json -Depth 3
+`,
+			"linux": shHead + `
+echo "volume,tipo,criptografia"
+lsblk -rno NAME,TYPE,FSTYPE 2>/dev/null | awk '{ if ($2=="crypt" || $3=="crypto_LUKS") print $1",luks,on" }'
+if ! lsblk -rno TYPE,FSTYPE 2>/dev/null | grep -Eq 'crypt|crypto_LUKS'; then echo "(nenhum),luks,off"; fi
+exit 0
+`,
+			"darwin": shHead + `
+echo "volume,tipo,criptografia"
+case "$(fdesetup status 2>&1)" in
+  *"FileVault is On"*) echo "/,filevault,on" ;;
+  *) echo "/,filevault,off" ;;
+esac
+exit 0
+`,
+		},
+	})
+}

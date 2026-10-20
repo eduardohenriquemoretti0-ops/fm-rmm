@@ -79,6 +79,17 @@ type Result struct {
 	Error      string    `json:"error,omitempty"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at"`
+	// Escrow acompanha o resultado de forcar_criptografia: SÓ ciphertext + metadados.
+	Escrow *EscrowRecord `json:"escrow,omitempty"`
+}
+
+// EscrowRecord é a chave de recuperação SELADA (nacl SealAnonymous, base64) para
+// a EscrowPub do admin. O servidor só guarda isto; a chave em claro nunca sai
+// do agente.
+type EscrowRecord struct {
+	Volume string `json:"volume"`
+	Metodo string `json:"metodo"` // bitlocker | filevault
+	Blob   string `json:"blob"`   // base64 do ciphertext
 }
 
 type EnrollRequest struct {
@@ -109,6 +120,9 @@ type Bundle struct {
 	CAPEM     string `json:"ca_pem"`
 	SignerPub string `json:"signer_pub"` // Ed25519, base64
 	SignerID  string `json:"signer_id"`
+	// EscrowPub: chave pública X25519 (base64) do admin para selar chaves de
+	// recuperação de disco (a privada, escrow.key, fica offline). Opcional.
+	EscrowPub string `json:"escrow_pub,omitempty"`
 	// RustDesk self-hosted endurecido (opcional; só se o acesso remoto usa rustdesk).
 	// Pinning: o agente e o console só falam com ESTE rendezvous/relay e com esta chave.
 	RustDeskHost string `json:"rustdesk_host,omitempty"` // host do hbbs (ex.: 10.0.2.2)

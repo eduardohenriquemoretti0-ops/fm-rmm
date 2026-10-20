@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/escrow"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/pki"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/proto"
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/sign"
@@ -299,17 +300,40 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request) {
 	if len(res.Output) > proto.MaxOutputSize {
 		res.Output, res.Truncated = res.Output[:proto.MaxOutputSize], true
 	}
+	// defesa em profundidade: nenhuma senha de recuperação em claro entra no
+	// resultado nem na auditoria, mesmo que um agente com bug a envie.
+	res.Output, res.Error = escrow.Redigir(res.Output), escrow.Redigir(res.Error)
 	status := "done"
 	if res.Status != "ok" {
 		status = "failed"
 	}
+	rec := res.Escrow
+	res.Escrow = nil // o ciphertext vai para a tabela escrow, não para o resultado
 	raw, _ := json.Marshal(res)
 	if err := s.Store.FinishJob(a.ID, res.JobID, status, string(raw)); err != nil {
 		fail(w, http.StatusConflict, "job não está aguardando resultado deste agente")
 		return
 	}
 	s.audit("job.resultado", "agente:"+a.ID, map[string]any{"job": res.JobID, "status": res.Status, "codigo_saida": res.ExitCode, "erro": res.Error})
+	if rec != nil {
+		s.registrarEscrow(a.ID, res, *rec)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "1"})
+}
+
+// registrarEscrow guarda o blob selado SÓ se o job é mesmo forcar_criptografia
+// deste agente e terminou ok. Falhas ficam na auditoria, sem o blob.
+func (s *Server) registrarEscrow(agentID string, res proto.Result, rec proto.EscrowRecord) {
+	j, err := s.Store.Job(res.JobID)
+	if err != nil || j.AgentID != agentID || j.Action != ActionEscrow || res.Status != "ok" {
+		s.audit("escrow.recusado", "agente:"+agentID, map[string]any{"job": res.JobID, "motivo": "resultado de escrow fora de forcar_criptografia ok"})
+		return
+	}
+	if err := s.Store.AddEscrow(agentID, res.JobID, rec); err != nil {
+		s.audit("escrow.recusado", "agente:"+agentID, map[string]any{"job": res.JobID, "motivo": err.Error()})
+		return
+	}
+	s.audit("escrow.registrado", "agente:"+agentID, map[string]any{"job": res.JobID, "volume": rec.Volume, "metodo": rec.Metodo, "blob_sha256_6": blobFingerprint(rec.Blob)})
 }
 
 func (s *Server) handleSessionEvent(w http.ResponseWriter, r *http.Request) {

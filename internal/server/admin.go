@@ -22,6 +22,9 @@ const (
 	FileKey     = "server.key"
 	FileDB      = "fmrmm.db"
 	FileSigners = "signers.json"
+	// escrow.key: PRIVADA X25519 do admin (offline em produção; o serve NUNCA a lê).
+	FileEscrowKey = "escrow.key"
+	FileEscrowPub = "escrow.pub"
 )
 
 // Signers: chaves públicas de administrador aceitas (key_id -> base64).

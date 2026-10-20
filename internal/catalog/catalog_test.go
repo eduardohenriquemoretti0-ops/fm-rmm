@@ -14,6 +14,12 @@ func TestValidate(t *testing.T) {
 		{"seguranca", "darwin", nil},
 		{"reiniciar_servico", "windows", map[string]string{"nome": "Spooler"}},
 		{"reiniciar_servico", "linux", map[string]string{"nome": "cups"}},
+		{"forcar_criptografia", "windows", nil},
+		{"forcar_criptografia", "windows", map[string]string{"volume": "C"}},
+		{"forcar_criptografia", "linux", nil},
+		{"cripto_status", "windows", nil},
+		{"cripto_status", "linux", nil},
+		{"cripto_status", "darwin", nil},
 		{"wake_on_lan", "windows", map[string]string{"mac": "AA:BB:CC:DD:EE:FF"}},
 		{"wake_on_lan", "linux", map[string]string{"mac": "aa-bb-cc-dd-ee-ff"}},
 		{"wake_on_lan", "darwin", map[string]string{"mac": "00:1a:2B:3c:4D:5e", "broadcast": "192.168.1.255"}},
@@ -28,6 +34,8 @@ func TestValidate(t *testing.T) {
 		params             map[string]string
 	}{
 		{"fora do catálogo", "powershell", "windows", nil},
+		{"escrow volume fora da lista", "forcar_criptografia", "windows", map[string]string{"volume": "Z"}},
+		{"escrow injeção", "forcar_criptografia", "windows", map[string]string{"volume": "C;calc"}},
 		{"comando livre", "shell", "linux", map[string]string{"cmd": "id"}},
 		{"parâmetro desconhecido", "info", "windows", map[string]string{"x": "1"}},
 		{"parâmetro ausente", "reiniciar_servico", "windows", nil},
@@ -51,7 +59,8 @@ func TestCatalogCompleto(t *testing.T) {
 	for _, n := range Names() {
 		a, _ := Get(n)
 		for _, o := range []string{"windows", "linux", "darwin"} {
-			if a.Scripts[o] == "" {
+			sc, existe := a.Scripts[o]
+			if !existe || (sc == "" && !a.Native) { // nativa: só lista o SO, sem script
 				t.Errorf("%s sem script para %s", n, o)
 			}
 		}
@@ -122,5 +131,20 @@ func TestPatternNaoAbreInjecao(t *testing.T) {
 	}
 	if _, err := Validate("_teste_pattern", "linux", map[string]string{"v": "a:b-c.1"}); err != nil {
 		t.Errorf("valor limpo deveria passar: %v", err)
+	}
+}
+
+func TestForcarCriptografiaEhNativaEMudaEstado(t *testing.T) {
+	a, ok := Get("forcar_criptografia")
+	if !ok || !a.Native || !a.Changes {
+		t.Fatalf("forcar_criptografia deve ser nativa e Changes: %+v", a)
+	}
+	for goos, sc := range a.Scripts {
+		if sc != "" {
+			t.Errorf("%s: ação nativa não pode ter script", goos)
+		}
+	}
+	if c, _ := Get("cripto_status"); c.Changes || c.Native {
+		t.Error("cripto_status deve ser só leitura (script)")
 	}
 }
