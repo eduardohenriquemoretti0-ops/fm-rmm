@@ -60,3 +60,44 @@ func TestCmdBMCSenhaDeStdinNuncaDeFlag(t *testing.T) {
 		t.Fatal("--senha por flag não deveria existir")
 	}
 }
+
+func TestCmdBMCHostsAddListRm(t *testing.T) {
+	dir := t.TempDir()
+	if err := cmdInit([]string{"--dir", dir, "--hosts", "localhost"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	run := func(a ...string) error {
+		out.Reset()
+		return cmdBMCHostsCom(append([]string{"--dir", dir}, a...), &out)
+	}
+	if err := run("add", "--host", "10.1.1.10", "--grupo", "filialA", "--nome", "srv-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run("add", "--host", "BMC-B.local", "--porta", "8443", "--grupo", "filialB", "--nome", "srv-b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run("add", "--host", "x"); err == nil {
+		t.Fatal("add sem grupo/nome deveria falhar")
+	}
+	if err := run("list"); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("list:\n%s", out.String())
+	for _, w := range []string{"10.1.1.10", "443", "filialA", "bmc-b.local", "8443", "srv-b"} {
+		if !strings.Contains(out.String(), w) {
+			t.Fatalf("list sem %q: %s", w, out.String())
+		}
+	}
+	if err := run("rm", "--host", "10.1.1.10"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run("rm", "--host", "10.1.1.10"); err == nil {
+		t.Fatal("rm repetido deveria falhar")
+	}
+	_ = run("list")
+	t.Logf("list após rm:\n%s", out.String())
+	if strings.Contains(out.String(), "10.1.1.10") || !strings.Contains(out.String(), "bmc-b.local") {
+		t.Fatalf("list após rm: %s", out.String())
+	}
+}

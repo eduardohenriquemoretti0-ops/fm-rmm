@@ -9,9 +9,19 @@
 // descartada: não vai ao banco, nem ao log, nem à auditoria, nem ao erro, nem à
 // resposta. Só host/porta/system_id/ação/resultado entram na auditoria.
 //
-// Autorização: além do step-up, o técnico do operador precisa pertencer EXATAMENTE
-// ao grupo GrupoBMC (o curinga '*' não vale). Isso é uma capacidade sensível e
-// precisa de concessão explícita (`techs grant NOME bmc`).
+// Autorização (todas as camadas são exigidas):
+//  1. o técnico do operador pertence EXATAMENTE ao grupo GrupoBMC (capacidade
+//     sensível; o curinga '*' não vale; `techs grant NOME bmc`);
+//  2. step-up válido;
+//  3. o host:porta alvo está no INVENTÁRIO (`fmrmm-server bmc-hosts add ...`) e o
+//     técnico pertence ao grupo daquele host (ou '*', como no acesso remoto).
+//     Host fora do inventário e host de outro grupo respondem IGUAL (404
+//     bmc_host_nao_encontrado), para não revelar quais BMCs existem; a auditoria
+//     distingue o motivo.
+//
+// Brute-force: falhas (credencial recusada pelo BMC, host não permitido) são
+// contadas por operador e por host; excedido o limite => 429 (bmc_limite.go).
+// Requisições bem-sucedidas não contam.
 //
 // SSRF: o servidor disca para um destino informado pelo operador, então o host é
 // validado (IP/hostname simples) e a conexão recusa loopback, link-local,
@@ -29,6 +39,7 @@ import (
 	"time"
 
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/redfish"
+	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/server"
 )
 
 // GrupoBMC é o grupo de técnico que autoriza o controle de energia por BMC.
@@ -106,6 +117,11 @@ func (c *Console) bmcHandler(w http.ResponseWriter, r *http.Request, poder bool)
 		c.recusaBMC(w, op.ID, http.StatusForbidden, "sem_permissao_bmc", evento, req)
 		return
 	}
+	// 1b. lockout por operador (antes de qualquer trabalho)
+	if esp := c.bmcLim.bloqueado(chaveOp(op.ID), c.agora()); esp > 0 {
+		c.recusaBMC429(w, op.ID, esp, "operador", evento, req)
+		return
+	}
 	// 2. step-up (também no status: evita usar o console para adivinhar senha de BMC)
 	if !c.sessoes.StepUpValido(tok, thumb) {
 		c.recusaBMC(w, op.ID, http.StatusForbidden, "step_up_necessario", evento, req)
@@ -126,6 +142,26 @@ func (c *Console) bmcHandler(w http.ResponseWriter, r *http.Request, poder bool)
 	}
 	if err := redfish.ValidaSystemID(req.SystemID); err != nil {
 		c.recusaBMC(w, op.ID, http.StatusUnprocessableEntity, "system_id_invalido", evento, req)
+		return
+	}
+	// 3b. inventário: host cadastrado E permitido a este técnico
+	if err := c.st.BMCHostPermitido(req.Host, req.Porta, op.TechName); err != nil {
+		if !errors.Is(err, server.ErrBMCHostDesconhecido) && !errors.Is(err, server.ErrBMCHostNegado) {
+			erroInterno(w)
+			return
+		}
+		motivo := "host_fora_do_inventario"
+		if errors.Is(err, server.ErrBMCHostNegado) {
+			motivo = "host_de_outro_grupo"
+		}
+		c.bmcLim.falha(chaveOp(op.ID), c.agora())
+		_ = c.auditaBMC("console.bmc.recusada", op.ID, req, "recusado", motivo+" ("+evento+")")
+		writeJSON(w, http.StatusNotFound, map[string]any{"erro": "bmc_host_nao_encontrado"})
+		return
+	}
+	hk := chaveHost(req.Host, req.Porta)
+	if esp := c.bmcLim.bloqueado(hk, c.agora()); esp > 0 {
+		c.recusaBMC429(w, op.ID, esp, "host", evento, req)
 		return
 	}
 	proibir := c.bmcProibirIP
@@ -165,6 +201,10 @@ func (c *Console) bmcHandler(w http.ResponseWriter, r *http.Request, poder bool)
 		resp["estado"] = e
 	}
 	status, resultado := classificaBMC(erroBMC)
+	if errors.Is(erroBMC, redfish.ErrAutenticacao) { // só credencial errada conta p/ lockout
+		c.bmcLim.falha(chaveOp(op.ID), c.agora())
+		c.bmcLim.falha(hk, c.agora())
+	}
 	if erroBMC != nil {
 		resp = map[string]any{"erro": resultado}
 		if req.Insecure {
@@ -207,4 +247,15 @@ func (c *Console) recusaBMC(w http.ResponseWriter, opID string, status int, codi
 		resp["step_up"] = true
 	}
 	writeJSON(w, status, resp)
+}
+
+// recusaBMC429 responde 429 + Retry-After e audita (sem credencial).
+func (c *Console) recusaBMC429(w http.ResponseWriter, opID string, espera time.Duration, alvo, evento string, req bmcReq) {
+	_ = c.auditaBMC("console.bmc.recusada", opID, req, "recusado", "limite_de_tentativas_"+alvo+" ("+evento+")")
+	seg := int(espera.Round(time.Second) / time.Second)
+	if seg < 1 {
+		seg = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(seg))
+	writeJSON(w, http.StatusTooManyRequests, map[string]any{"erro": "muitas_tentativas", "retry_after_s": seg})
 }

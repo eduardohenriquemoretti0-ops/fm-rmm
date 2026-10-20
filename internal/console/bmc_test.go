@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
@@ -71,6 +72,15 @@ func novoCenarioBMC(t *testing.T, m *bmcMock, concedeGrupo bool) *cenarioAcao {
 		if err := c.a.f.st.GrantGroup("tA", GrupoBMC); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// inventário: o mock é um BMC do grupo "dc"; tA pertence a "dc"
+	h, p, _ := net.SplitHostPort(m.Listener.Addr().String())
+	porta, _ := strconv.Atoi(p)
+	if err := c.a.f.st.AdicionarBMCHost(h, porta, "dc", "mock-bmc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.a.f.st.GrantGroup("tA", "dc"); err != nil {
+		t.Fatal(err)
 	}
 	c.a.c.bmcRoots = m.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
 	c.a.c.bmcProibirIP = func(netip.Addr) bool { return false } // o mock vive em 127.0.0.1
@@ -293,7 +303,7 @@ func TestBMCEntradasInvalidasEDestinoProibido(t *testing.T) {
 	c.exigeCodigo(t, c.envia(t, "/api/bmc/power", r), http.StatusUnprocessableEntity, "acao_invalida")
 	r = m.req("On")
 	r["host"] = "10.0.0.5/../x"
-	c.exigeCodigo(t, c.envia(t, "/api/bmc/power", r), http.StatusUnprocessableEntity, "host_invalido")
+	c.exigeCodigo(t, c.envia(t, "/api/bmc/power", r), http.StatusNotFound, "bmc_host_nao_encontrado")
 	r = m.req("On")
 	r["system_id"] = "../../x"
 	c.exigeCodigo(t, c.envia(t, "/api/bmc/power", r), http.StatusUnprocessableEntity, "system_id_invalido")
@@ -313,4 +323,140 @@ func TestBMCEntradasInvalidasEDestinoProibido(t *testing.T) {
 		t.Fatal("BMC acionado com entrada inválida")
 	}
 	semSenhaEmLugarNenhum(t, c, "")
+}
+
+// ultimaRecusaBMC devolve o dado da última auditoria console.bmc.recusada.
+func ultimaRecusaBMC(t *testing.T, c *cenarioAcao) string {
+	t.Helper()
+	entradas, _ := c.a.f.st.AuditEntries()
+	d := ""
+	for _, e := range entradas {
+		if e.Event == "console.bmc.recusada" {
+			d = string(e.Data)
+		}
+	}
+	return d
+}
+
+func TestBMCHostForaDoInventarioRecusado(t *testing.T) {
+	logs := capturaLog(t)
+	m := novoBMCMock(t)
+	c := novoCenarioBMC(t, m, true)
+	c.stepUp(t)
+	r := m.req("ForceOff")
+	r["host"] = "10.9.9.9" // BMC plausível, mas não cadastrado
+	rec := c.envia(t, "/api/bmc/power", r)
+	c.exigeCodigo(t, rec, http.StatusNotFound, "bmc_host_nao_encontrado")
+	aud := ultimaRecusaBMC(t, c)
+	if !strings.Contains(aud, "host_fora_do_inventario") {
+		t.Fatalf("auditoria: %s", aud)
+	}
+	// mesma máquina, porta diferente da cadastrada, também recusa
+	r = m.req("ForceOff")
+	r["porta"] = r["porta"].(int) + 1
+	c.exigeCodigo(t, c.envia(t, "/api/bmc/power", r), http.StatusNotFound, "bmc_host_nao_encontrado")
+	if len(m.resets) != 0 {
+		t.Fatal("BMC acionado fora do inventário")
+	}
+	t.Logf("fora do inventário -> %d %s | auditoria %s", rec.Code, strings.TrimSpace(rec.Body.String()), aud)
+	semSenhaEmLugarNenhum(t, c, logs.String(), rec.Body.String())
+}
+
+func TestBMCHostDeOutroGrupoInacessivel(t *testing.T) {
+	logs := capturaLog(t)
+	m := novoBMCMock(t)
+	c := novoCenarioBMC(t, m, true)
+	c.stepUp(t)
+	h, p, _ := net.SplitHostPort(m.Listener.Addr().String())
+	porta, _ := strconv.Atoi(p)
+	// o host passa a ser do grupo "filialA"; tA (tem bmc e dc, mas não filialA) não acessa
+	if err := c.a.f.st.AdicionarBMCHost(h, porta, "filialA", "mock-bmc"); err != nil {
+		t.Fatal(err)
+	}
+	rec := c.envia(t, "/api/bmc/power", m.req("ForceOff"))
+	c.exigeCodigo(t, rec, http.StatusNotFound, "bmc_host_nao_encontrado") // idêntico a "não existe"
+	aud := ultimaRecusaBMC(t, c)
+	if !strings.Contains(aud, "host_de_outro_grupo") {
+		t.Fatalf("auditoria: %s", aud)
+	}
+	if len(m.resets) != 0 {
+		t.Fatal("BMC acionado por operador de outro grupo")
+	}
+	t.Logf("host do grupo filialA, operador do grupo dc -> %d %s | auditoria %s", rec.Code, strings.TrimSpace(rec.Body.String()), aud)
+	// ao receber o grupo do host, passa
+	if err := c.a.f.st.GrantGroup("tA", "filialA"); err != nil {
+		t.Fatal(err)
+	}
+	rec = c.envia(t, "/api/bmc/power", m.req("ForceOff"))
+	if rec.Code != 200 || len(m.resets) != 1 {
+		t.Fatalf("cadastrado+permitido: %d %s", rec.Code, rec.Body.String())
+	}
+	t.Logf("após grant filialA -> %d %s", rec.Code, strings.TrimSpace(rec.Body.String()))
+	semSenhaEmLugarNenhum(t, c, logs.String(), rec.Body.String())
+}
+
+func TestBMCRateLimitPorOperadorLibera(t *testing.T) {
+	logs := capturaLog(t)
+	m := novoBMCMock(t)
+	c := novoCenarioBMC(t, m, true)
+	c.stepUp(t)
+	ruim := m.req("On")
+	ruim["senha"] = "errada"
+	for i := 0; i < bmcMaxFalhasOperador; i++ {
+		c.exigeCodigo(t, c.envia(t, "/api/bmc/power", ruim), http.StatusBadGateway, "bmc_credencial_recusada")
+	}
+	// estourou: nem a senha CERTA passa durante o bloqueio
+	rec := c.envia(t, "/api/bmc/power", m.req("On"))
+	c.exigeCodigo(t, rec, http.StatusTooManyRequests, "muitas_tentativas")
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("sem Retry-After")
+	}
+	aud := ultimaRecusaBMC(t, c)
+	if !strings.Contains(aud, "limite_de_tentativas_operador") {
+		t.Fatalf("auditoria: %s", aud)
+	}
+	t.Logf("após %d falhas -> %d %s Retry-After=%s | auditoria %s", bmcMaxFalhasOperador, rec.Code,
+		strings.TrimSpace(rec.Body.String()), rec.Header().Get("Retry-After"), aud)
+	if len(m.resets) != 0 {
+		t.Fatal("reset durante bloqueio")
+	}
+	// passada a janela, libera
+	// (só o relógio do console avança; a sessão do operador continua válida)
+	base := c.a.f.agora
+	c.a.c.agora = func() time.Time { return base.Add(bmcJanelaFalhas + time.Second) }
+	rec = c.envia(t, "/api/bmc/power", m.req("On"))
+	if rec.Code != 200 || len(m.resets) != 1 {
+		t.Fatalf("após a janela: %d %s", rec.Code, rec.Body.String())
+	}
+	t.Logf("após a janela -> %d %s", rec.Code, strings.TrimSpace(rec.Body.String()))
+	semSenhaEmLugarNenhum(t, c, logs.String(), rec.Body.String())
+}
+
+func TestBMCSucessoNaoConsomeCota(t *testing.T) {
+	m := novoBMCMock(t)
+	c := novoCenarioBMC(t, m, true)
+	c.stepUp(t)
+	for i := 0; i < 3*bmcMaxFalhasOperador; i++ {
+		if rec := c.envia(t, "/api/bmc/status", m.req("")); rec.Code != 200 {
+			t.Fatalf("uso normal travou na iteração %d: %d", i, rec.Code)
+		}
+	}
+}
+
+func TestBMCRateLimitPorHostAlemDoOperador(t *testing.T) {
+	l := novoLimitadorBMC()
+	agora := time.Now()
+	k := chaveHost("10.0.0.1", 0)
+	for i := 0; i < bmcMaxFalhasHost; i++ {
+		if l.bloqueado(k, agora) != 0 {
+			t.Fatalf("bloqueou cedo (%d)", i)
+		}
+		l.falha(k, agora)
+	}
+	if l.bloqueado(k, agora) == 0 {
+		t.Fatal("deveria bloquear o host")
+	}
+	if l.bloqueado(k, agora.Add(bmcJanelaFalhas+time.Second)) != 0 || len(l.falhas) != 0 {
+		t.Fatal("deveria liberar e limpar a memória")
+	}
 }

@@ -113,6 +113,10 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("banco (vulnerabilidades): %w", err)
 	}
+	if err := st.initBMCHosts(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("banco (inventário BMC): %w", err)
+	}
 	return st, nil
 }
 

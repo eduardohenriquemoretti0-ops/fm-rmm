@@ -62,6 +62,8 @@ Operação:
   session  --dir D list
   bmc      status|power --host H [--acao On|ForceOff|GracefulShutdown|ForceRestart|GracefulRestart] [--insecure] [--senha-stdin] [--dir D]
            (BMC/Redfish; senha só por $FMRMM_BMC_PASS ou stdin; nada é guardado)
+  bmc-hosts --dir D add --host H [--porta P] --grupo G --nome N | list | rm --host H [--porta P]
+           (inventário de BMCs; o console só conecta a hosts cadastrados e do grupo do técnico)
   view     --dir D --relay-url wss://host:8443 --session ses-... --token TOK --out DIR [--frames N]  (console: recebe e salva a tela)
   audit    --dir D verify | list [--tail 50]
 Operadores do console (ver docs/console-onboarding-operador.md):
@@ -138,6 +140,8 @@ func main() {
 		err = cmdCVE(args)
 	case "bmc":
 		err = cmdBMC(args)
+	case "bmc-hosts":
+		err = cmdBMCHosts(args)
 	case "catalog":
 		cmdCatalog()
 	case "version":

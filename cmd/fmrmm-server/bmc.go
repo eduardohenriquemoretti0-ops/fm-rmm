@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/eduardohenriquemoretti0-ops/fm-rmm/internal/redfish"
@@ -115,4 +116,75 @@ func cmdBMCCom(args []string, stdin io.Reader, out io.Writer) error {
 		}
 	}
 	return erroBMC
+}
+
+// cmdBMCHosts administra o inventário de hosts BMC (o console só conecta a estes).
+//
+//	bmc-hosts --dir D add --host H [--porta P] --grupo G --nome N
+//	bmc-hosts --dir D list
+//	bmc-hosts --dir D rm  --host H [--porta P]
+func cmdBMCHosts(args []string) error {
+	return cmdBMCHostsCom(args, os.Stdout)
+}
+
+func cmdBMCHostsCom(args []string, out io.Writer) error {
+	const uso = "uso: bmc-hosts --dir D add --host H [--porta P] --grupo G --nome N | list | rm --host H [--porta P]"
+	fs := flag.NewFlagSet("bmc-hosts", flag.ContinueOnError)
+	dir := dirFlag(fs)
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) == 0 {
+		return errors.New(uso)
+	}
+	sub := rest[0]
+	sf := flag.NewFlagSet("bmc-hosts "+sub, flag.ContinueOnError)
+	host := sf.String("host", "", "IP/nome do BMC")
+	porta := sf.Int("porta", 0, "porta HTTPS do BMC (padrão 443)")
+	grupo := sf.String("grupo", "", "grupo de técnicos dono do host")
+	nome := sf.String("nome", "", "nome amigável")
+	sf.SetOutput(os.Stderr)
+	if err := sf.Parse(rest[1:]); err != nil {
+		return err
+	}
+	st, err := openStore(*dir)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	switch sub {
+	case "add":
+		if *host == "" || *grupo == "" || *nome == "" {
+			return errors.New("add exige --host, --grupo e --nome")
+		}
+		if err := st.AdicionarBMCHost(*host, *porta, *grupo, *nome); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "bmc-host: %s grupo=%s nome=%s\n", *host, *grupo, *nome)
+		return st.Audit("bmc.host.cadastrado", actor(), map[string]any{
+			"host": *host, "porta": *porta, "grupo": *grupo, "nome": *nome})
+	case "list":
+		hs, err := st.ListarBMCHosts()
+		if err != nil {
+			return err
+		}
+		tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "HOST\tPORTA\tGRUPO\tNOME")
+		for _, h := range hs {
+			fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", h.Host, h.Porta, h.Grupo, h.Nome)
+		}
+		return tw.Flush()
+	case "rm":
+		if *host == "" {
+			return errors.New("rm exige --host")
+		}
+		if err := st.RemoverBMCHost(*host, *porta); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "bmc-host removido: %s\n", *host)
+		return st.Audit("bmc.host.removido", actor(), map[string]any{"host": *host, "porta": *porta})
+	}
+	return errors.New(uso)
 }

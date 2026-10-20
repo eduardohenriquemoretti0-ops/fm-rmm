@@ -52,6 +52,7 @@ type Console struct {
 	// BMC/Redfish (bmc.go): raízes extras e política de destino. Nulos = padrão seguro.
 	bmcRoots     *x509.CertPool
 	bmcProibirIP func(netip.Addr) bool
+	bmcLim       *limitadorBMC // rate-limit de falhas por operador/host (bmc_limite.go)
 }
 
 // NovoConsole monta o console. Exige que o Autenticador e o store sejam os
@@ -67,7 +68,7 @@ func NovoConsole(sessoes *SessionManager, aut *Autenticador, st *server.Store, c
 	if intervalo <= 0 {
 		return nil, errors.New("console: intervalo de check-in deve ser positivo")
 	}
-	return &Console{sessoes: sessoes, aut: aut, st: st, ca: ca, intervalo: intervalo, agora: time.Now}, nil
+	return &Console{sessoes: sessoes, aut: aut, st: st, ca: ca, intervalo: intervalo, agora: time.Now, bmcLim: novoLimitadorBMC()}, nil
 }
 
 // chaves de contexto: o middleware põe o operador e a sessão; os handlers leem.
