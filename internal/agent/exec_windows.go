@@ -49,3 +49,21 @@ func scriptCommand(ctx context.Context, a catalog.Action, keys []string, params 
 	cmd.Dir = os.Getenv("SystemRoot")
 	return cmd
 }
+
+// prepararInterpretador: caminho absoluto do PowerShell e o corpo via
+// -EncodedCommand (sem problema de aspas); ambiente herdado.
+func prepararInterpretador(name string, args []string) (string, []string, []string) {
+	if name != "powershell" {
+		return name, args, os.Environ()
+	}
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-Command" && i+1 < len(args) {
+			out = append(out, "-EncodedCommand", encodeCommand(args[i+1]))
+			i++
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return powershellPath(), out, os.Environ()
+}

@@ -54,6 +54,12 @@ func (ag *Agent) runNative(ctx context.Context, a catalog.Action, p proto.JobPay
 			return "", 1, nil, err
 		}
 		return out, 0, nil, nil
+	case "rodar_script":
+		out, err := ag.scriptAcao(ctx, a, p)
+		if err != nil {
+			return "", 1, nil, err
+		}
+		return out, 0, nil, nil
 	case "wipe_remoto":
 		out, err := ag.wipeRemoto(ctx, a, p)
 		if err != nil {

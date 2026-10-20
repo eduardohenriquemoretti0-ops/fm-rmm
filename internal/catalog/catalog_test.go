@@ -62,7 +62,7 @@ func TestCatalogCompleto(t *testing.T) {
 			if a.Destructive && o == "darwin" {
 				continue // wipe_remoto: sem suporte no macOS (MDM), recusado por Validate
 			}
-			if (n == "instalar_pacote" || n == "desinstalar_pacote") && o == "darwin" {
+			if (n == "instalar_pacote" || n == "desinstalar_pacote" || n == "rodar_script") && o == "darwin" {
 				continue // catálogo de software: só winget (windows) e apt (linux); Validate recusa darwin
 			}
 			sc, existe := a.Scripts[o]

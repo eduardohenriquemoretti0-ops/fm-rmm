@@ -67,6 +67,13 @@ type SignedSoftwareCatalog struct {
 	Sig []byte `json:"sig"`
 }
 
+// SignedScriptLibrary é a biblioteca de scripts assinada pela chave RAIZ
+// offline. Mesmo formato de SignedSoftwareCatalog.
+type SignedScriptLibrary struct {
+	Raw []byte `json:"raw"`
+	Sig []byte `json:"sig"`
+}
+
 type CheckinResponse struct {
 	Jobs        []SignedJob   `json:"jobs"`
 	Grants      []SignedGrant `json:"grants,omitempty"` // sessões remotas autorizadas
@@ -77,6 +84,8 @@ type CheckinResponse struct {
 	// Software é o catálogo de software corrente (omitido se não há). O agente
 	// verifica contra a raiz e aplica anti-downgrade; repetido é o caso normal.
 	Software *SignedSoftwareCatalog `json:"software,omitempty"`
+	// Scripts é a biblioteca de scripts corrente (omitida se não há): raiz + anti-downgrade.
+	Scripts *SignedScriptLibrary `json:"scripts,omitempty"`
 }
 
 // Result é o retorno de um job. Autenticado pelo mTLS do agente.

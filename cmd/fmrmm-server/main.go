@@ -84,6 +84,11 @@ Catálogo de software (allow-list; o operador só escolhe o item, nunca o pacote
   software --dir D publish --raiz KEYID --catalogo software-catalog.json --sig software-catalog.sig
                                                            publica o catálogo assinado (confere a raiz; só versão maior)
   software --dir D show                                    versão publicada e itens
+Biblioteca de scripts assinada (NÃO é terminal: o operador só escolhe id+versão; corpo nunca vem do job):
+  scripts build --key admin.key --scripts scripts.json [--versao-atual N] [--out DIR]
+                                                           OFFLINE: valida, calcula sha256 e assina script-library.json + .sig
+  scripts --dir D publish --raiz KEYID --biblioteca script-library.json --sig script-library.sig
+  scripts --dir D show                                     versão publicada e scripts (id, versão, hash)
   cve      --dir D scan --agent ID|todos [--linux-ecosystem Debian:12]   cruza o inventário software com o OSV.dev (read-only)
   cve      --dir D show --agent ID                         resumo (JSON) das vulnerabilidades já gravadas
   catalog                                                  ações disponíveis
@@ -125,6 +130,8 @@ func main() {
 		err = cmdSigners(args)
 	case "software":
 		err = cmdSoftware(args)
+	case "scripts":
+		err = cmdScripts(args)
 	case "operadores":
 		err = cmdOperadores(args)
 	case "cve":

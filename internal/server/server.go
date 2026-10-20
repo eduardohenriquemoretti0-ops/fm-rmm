@@ -250,6 +250,12 @@ func (s *Server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	} else if v > 0 {
 		resp.Software = &proto.SignedSoftwareCatalog{Raw: raw, Sig: sig}
 	}
+	// biblioteca de scripts assinada: o agente verifica contra a raiz e guarda
+	if v, raw, sig, err := s.Store.bibliotecaScriptsAtual(); err != nil {
+		s.Log.Error("biblioteca de scripts", "agente", a.ID, "erro", err)
+	} else if v > 0 {
+		resp.Scripts = &proto.SignedScriptLibrary{Raw: raw, Sig: sig}
+	}
 	tsJobs := s.confiancaEntrega()
 	for _, j := range jobs {
 		var sj proto.SignedJob

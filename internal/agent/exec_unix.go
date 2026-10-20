@@ -23,3 +23,11 @@ func scriptCommand(ctx context.Context, a catalog.Action, keys []string, params 
 	cmd.Dir = "/"
 	return cmd
 }
+
+// prepararInterpretador: caminho absoluto do bash e ambiente mínimo.
+func prepararInterpretador(name string, args []string) (string, []string, []string) {
+	if name == "bash" {
+		name = "/bin/bash"
+	}
+	return name, args, []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "HOME=/root"}
+}

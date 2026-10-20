@@ -604,3 +604,29 @@ func init() {
 		})
 	}
 }
+
+// rodar_script: ação NATIVA da biblioteca de scripts assinada.
+//
+// Parâmetros: script_id e versao, que apontam uma entrada da biblioteca
+// assinada pela raiz (sign.ScriptLibrary). NÃO existe parâmetro de corpo,
+// comando ou interpretador: o agente resolve a entrada no que guardou, reconfere
+// o sha256 do corpo e RECUSA se faltar ou divergir. Não é terminal remoto.
+const (
+	scriptIDPattern     = `[a-z0-9][a-z0-9.-]{0,47}`
+	scriptVersaoPattern = `[0-9][0-9A-Za-z.-]{0,31}`
+)
+
+func init() {
+	register(Action{
+		Name:    "rodar_script",
+		Desc:    "Executa um script da biblioteca assinada pelo admin (id + versão); o operador escolhe da lista, nunca digita nem edita o corpo",
+		Changes: true,
+		Native:  true,
+		Timeout: 15 * time.Minute,
+		Params: map[string]Param{
+			"script_id": {Desc: "id do script na biblioteca assinada", Pattern: scriptIDPattern},
+			"versao":    {Desc: "versão exata do script na biblioteca assinada", Pattern: scriptVersaoPattern},
+		},
+		Scripts: map[string]string{"windows": "", "linux": ""},
+	})
+}
